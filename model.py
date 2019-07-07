@@ -2,10 +2,9 @@ import torch
 import torch.nn as nn
 import torch.utils.data
 
-if torch.cuda.is_available():
-    T = torch.cuda
-else:
-    T = torch
+device = torch.device(
+            'cuda' if torch.cuda.is_available() else 'cpu'
+        )
 
 class Noise(nn.Module):
     def __init__(self, use_noise, sigma=0.2):
@@ -15,7 +14,7 @@ class Noise(nn.Module):
 
     def forward(self, x):
         if self.use_noise:
-            return x + self.sigma * T.Tensor(x.size()).normal_()
+            return x + self.sigma * torch.randn_like(x)
         return x
 
 class ImageDiscriminator(nn.Module):
@@ -83,9 +82,7 @@ class VideoDiscriminator(nn.Module):
         )
 
     def forward(self, input):
-        h = self.main(input).squeeze()
-
-        return h, None
+        return self.main(input).squeeze()
 
 class VideoGenerator(nn.Module):
     def __init__(self, n_channels, ngf=64, 
@@ -127,8 +124,10 @@ class VideoGenerator(nn.Module):
         vlen = vlen if vlen else self.video_length
 
         emb_size = self.code_dims['video']
-        code = T.randn(vlen + 1, n_samples, emb_size)
-
+        code = torch.randn(
+                    vlen + 1, n_samples, emb_size, 
+                    device=device
+                )
         if condition is not None:
             code[:, self.dim_zM:] = condition
 
@@ -143,8 +142,10 @@ class VideoGenerator(nn.Module):
         vlen = vlen if vlen else self.video_length
 
         emb_size = self.code_dims['image']
-        code = T.randn(n_samples, emb_size)
-
+        code = torch.randn(
+                    n_samples, emb_size, 
+                    device=device
+                )
         if condition is not None:
             code[:, self.dim_zC:] = condition
 

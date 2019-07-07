@@ -10,7 +10,7 @@ from torch.utils.data import Dataset
 
 class VideoDataset(Dataset):
     def __init__(self, path, cache, vlen, 
-                 step=1, transform=None):
+                 step=1, ext='webm', transform=None):
         self.transform = transform
 
         path = Path(path)
@@ -30,7 +30,7 @@ class VideoDataset(Dataset):
             
             folder = path.parents[0]
             for sample in tqdm(raw_data, "Preparing dataset"):
-                video = folder / f"{sample['id']}.webm"
+                video = folder / f"{sample['id']}.{ext}"
                 ViCap = cv2.VideoCapture(video)
 
                 frames = []
