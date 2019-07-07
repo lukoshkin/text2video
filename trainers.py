@@ -1,180 +1,166 @@
 import time
 
-import numpy as np
-from pathlib import Path
-
-from logger import Logger
-
 import torch
 import torch.optim as optim
-from torch import nn
 
-if torch.cuda.is_available():
-    T = torch.cuda
-else:
-    T = torch
+from torch import nn
+from pathlib import Path
+from tensorboardX import SummaryWriter
 
 def images_to_numpy(tensor):
     generated = (torch.clamp(tensor, -1, 1) + 1) / 2 * 255
-    generated = generated.data.cpu().numpy().transpose(0, 2, 3, 1)
+    generated = generated.data
+                         .cpu()
+                         .numpy()
+                         .transpose(0, 2, 3, 1)
+
     return generated.astype('uint8')
 
 def videos_to_numpy(tensor):
     generated = (torch.clamp(tensor, -1, 1) + 1) / 2 * 255
-    generated = generated.data.cpu().numpy()
+    generated = generated.data
+                         .cpu()
+                         .numpy()
+                         .transpose(0, 2, 1, 3, 4)
+
     return generated.astype('uint8')
 
-class Trainer(object):
-    def __init__(self, image_sampler, video_sampler, 
-                 log_interval, train_batches, log_folder, 
-                 use_cuda=False, use_infogan=True, use_categories=True):
 
-        self.use_categories = use_categories
+class MultiOptimizer:
+    def __init__(self, *args):
+        self.opts = []
+        for arg in args:
+            self.opts.append(arg)
 
-        self.criterion = nn.BCEWithLogitsLoss()
-        self.category_criterion = nn.CrossEntropyLoss()
+    def step(self):
+        for opt in self.opts:
+            opt.step()
 
-        self.image_sampler = image_sampler
-        self.video_sampler = video_sampler
+    def zero_grad(self):
+        for opt in self.opts:
+            opt.zero_grad()
+
+class Trainer:
+    def __init__(self, image_loader, video_loader, 
+                 log_interval, num_batches, log_folder) 
+
+        self.image_loader = image_loader
+        self.video_loader = video_loader
 
         self.video_batch_size = self.video_sampler.batch_size
         self.image_batch_size = self.image_sampler.batch_size
 
         self.log_interval = log_interval
-        self.train_batches = train_batches
+        self.num_batches = num_batches
 
         self.log_folder = Path(log_folder)
 
-        self.use_cuda = use_cuda
+    def train(self, generator, discriminator, encoder):
+        writer = SummaryWriter()
+        opt1 = optim.Adam(
+                    generator.parameters(), 
+                    lr=2e-4, betas=(.5, .999), weight_decay=1e-5
+                )
+        opt2 = optim.Adam(
+                    discriminator['image'].parameters(), 
+                    lr=2e-4, betas=(.5, .999), weight_decay=1e-5
+                )
+        opt3 = optim.Adam(
+                    discriminator['video'].parameters(),
+                    lr=2e-4, betas=(.5, .999), weight_decay=1e-5
+                )
+        opt4 = optim.Adam(
+                    encoder.parameters(),
+                    lr=2e-4, betas=(.5, .999), weight_decay=1e-5
+                )
+        optimizers = MultiOptimizer(opt1, opt2, opt3)
 
+        def sampler(n_samples, type, vlen=None):
+            generator.eval()
+            if type == 'image':
+                return generator.sample_images(
+                            n_samples, conditions
+                        )
+            if type == 'video':
+                return generator.sample_videos(
+                            n_samples, conditions, vlen
+                        )
+            else:
+                raise TypeError('Wrong discriminator type')
 
-        torch.log(scores).mean()
-        torch.log1p(-scores).mean()
-
-    def train_discriminator(self):
-        gen_pairs = composeGenerated()
-        neg_pairs = sampleWrongAssociations()
-        pos_pairs = sampleCorrectAssociations()
-
-        pos_scores = discriminator(pos_pairs)
-        neg_scores = discriminator(neg_pairs)
-        gen_scores = discriminator(gen_pairs) # fake_batch.detach()
-
-
-
-        return l_discriminator
-
-    def train_generator(self, im_dis, vi_dis,
-                        sample_fake_images, sample_fake_videos,
-                        opt):
-        opt.zero_grad()
-
-        # train on images
-        fake_batch = sample_fake_images(self.image_batch_size)
-        fake_labels = image_discriminator(fake_batch)
-        all_ones = self.create_by_shape(fake_labels, 1)
-
-        l_generator = self.gan_criterion(fake_labels, all_ones)
-
-        # train on videos
-        fake_batch = sample_fake_videos(self.video_batch_size)
-        fake_labels = video_discriminator(fake_batch)
-        all_ones = self.create_by_shape(fake_labels, 1)
-
-        l_generator += self.gan_criterion(fake_labels, all_ones)
-        l_generator.backward()
-        opt.step()
-
-        return l_generator
-
-    def train(self, gen, im_dis, vi_dis):
-        if self.use_cuda:
-            gen.cuda()
-            im_dis.cuda()
-            vi_dis.cuda()
-
-        logger = Logger(self.log_folder)
-
-        # create optimizers
-        opt_gen  = optim.Adam(gen.parameters(), lr=2e-4, betas=(.5, .999), weight_decay=1e-5)
-
-        opt_imdis = optim.Adam(im_dis.parameters(), lr=2e-4, betas=(.5, .999), weight_decay=1e-5)
-        opt_vidis = optim.Adam(vi_dis.parameters(), lr=2e-4, betas=(.5, .999), weight_decay=1e-5)
-
-        # training loop
-
-        def sample_fake_image_batch(batch_size):
-            return generator.sample_images(batch_size)
-
-        def sample_fake_video_batch(batch_size):
-            return generator.sample_videos(batch_size)
-
-        def init_logs():
-            return {'l_gen': 0, 'l_image_dis': 0, 'l_video_dis': 0}
-
-        batch_num = 0
-
-        logs = init_logs()
-
-        start_time = time.time()
+        batch_No = 0
+        logs = dict.fromkeys(logs, 0)
+        time_per_epoch =- time.time()
 
         while True:
-            generator.train()
-            image_discriminator.train()
-            video_discriminator.train()
+            optimizers.zero_grad()
+            for type in ['image', 'video']:
+                gen_pairs = makePairsFromGenerated()
+                neg_pairs = sampleWrongAssociations()
+                pos_pairs = sampleProperAssociations()
 
-            opt_generator.zero_grad()
+                pos_scores = discriminator[type](pos_pairs)
+                neg_scores = discriminator[type](neg_pairs)
+                gen_scores = discriminator[type](gen_pairs)
 
-            opt_video_discriminator.zero_grad()
+                l1 = torch.log(pos_scores).mean()
+                l2 = torch.log1p(-neg_scores).mean()
+                l3 = torch.log1p(-gen_scores).mean()
+                
+                generator.eval()
+                discriminator[type].train()
 
-            # train image discriminator
-            l_idis = self.train_discriminator(image_discriminator, self.sample_real_image_batch,
-                                                   sample_fake_image_batch, opt_image_discriminator,
-                                                   self.image_batch_size, use_categories=False)
+                dis_loss = l1 + .5 * (l2 + l3)
+                logs[f"{type} dis"] += dis_loss.item()
+                (-dis_loss).backward()
 
-            # train video discriminator
-            l_vdis = self.train_discriminator(video_discriminator, self.sample_real_video_batch,
-                                                   sample_fake_video_batch, opt_video_discriminator,
-                                                   self.video_batch_size, use_categories=self.use_categories)
+                # calculate_grad_penalty
 
-            # train generator
-            l_gen = self.train_generator(image_discriminator, video_discriminator,
-                                         sample_fake_image_batch, sample_fake_video_batch,
-                                         opt_generator)
+                generator.train()
+                discriminator[type].eval()
 
-            logs['l_gen'] += l_gen.item()
+                gen_loss = .5 * (l3 - l2)
+                logs['generator'] += gen_loss.item()
+                gen_loss.backward()
 
-            logs['l_image_dis'] += l_image_dis.item()
-            logs['l_video_dis'] += l_video_dis.item()
+                logs['encoder'] += (l1 + l2).item()
 
-            batch_num += 1
+            optimizers.step()
+            batch_No += 1
 
-            if batch_num % self.log_interval == 0:
+            if batch_No % self.log_interval == 0:
 
-                log_string = "Batch %d" % batch_num
+                log_string = f"Batch {batch_No}" 
                 for k, v in logs.items():
                     log_string += " [%s] %5.3f" % (k, v / self.log_interval)
 
-                log_string += ". Took %5.2f" % (time.time() - start_time)
+                time_per_epoch += time.time()
+                log_string += ". Took %5.2f" % time_per_epoch 
 
                 print(log_string)
 
                 for tag, value in logs.items():
-                    logger.scalar_summary(tag, value / self.log_interval, batch_num)
+                    writer.add_scalar(tag, value / self.log_interval, batch_No)
 
-                logs = init_logs()
-                start_time = time.time()
+                logs = dict.fromkeys(logs, 0)
+                time_per_epoch =- time.time()
 
                 generator.eval()
 
-                images, _ = sample_fake_image_batch(self.image_batch_size)
-                logger.image_summary("Images", images_to_numpy(images), batch_num)
+                images = generator.sample_images(self.image_batch_size)
+                writer.add_images("Images", images, batch_No)
 
-                videos, _ = sample_fake_video_batch(self.video_batch_size)
-                logger.video_summary("Videos", videos_to_numpy(videos), batch_num)
+                videos = generator.sample_videos(self.video_batch_size)
+                writer.add_video("Videos", videos_to_numpy(videos), batch_No)
 
-                torch.save(generator, self.log_folder / 'generator_%05d.pytorch' % batch_num)
+                torch.save(
+                        generator.state_dict(), 
+                        self.log_folder / 'gen_%05d.pytorch' % batch_No
+                    )
 
-            if batch_num >= self.train_batches:
-                torch.save(generator, self.log_folder / 'generator_%05d.pytorch' % batch_num)
+            if batch_No >= self.num_batches:
+                torch.save(
+                        generator.state_dict(), 
+                        self.log_folder / 'gen_%05d.pytorch' % batch_No
+                    )
                 break
