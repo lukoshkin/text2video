@@ -1,5 +1,7 @@
 import time
 
+import numpy as np
+
 import torch
 import torch.optim as optim
 
@@ -26,82 +28,79 @@ def videos_to_numpy(tensor):
     return generated.astype('uint8')
 
 
-class MultiOptimizer:
-    def __init__(self, *args):
-        self.opts = []
-        for arg in args:
-            self.opts.append(arg)
-
-    def step(self):
-        for opt in self.opts:
-            opt.step()
-
-    def zero_grad(self):
-        for opt in self.opts:
-            opt.zero_grad()
 
 class Trainer:
-    def __init__(self, image_loader, video_loader, 
+    def __init__(self, video_loader, batch_size,
                  log_interval, num_batches, log_folder) 
 
-        self.image_loader = image_loader
+        self.num_batches  = num_batches
         self.video_loader = video_loader
-
-        self.video_batch_size = self.video_sampler.batch_size
-        self.image_batch_size = self.image_sampler.batch_size
-
         self.log_interval = log_interval
-        self.num_batches = num_batches
-
+        self.batch_size = self.batch_size
         self.log_folder = Path(log_folder)
 
     def train(self, generator, discriminator, encoder):
-        writer = SummaryWriter()
-        opt1 = optim.Adam(
+        optimizer1 = optim.Adam (
                     generator.parameters(), 
                     lr=2e-4, betas=(.5, .999), weight_decay=1e-5
                 )
-        opt2 = optim.Adam(
+        optimizer2 = optim.Adam (
                     discriminator['image'].parameters(), 
                     lr=2e-4, betas=(.5, .999), weight_decay=1e-5
                 )
-        opt3 = optim.Adam(
+        optimizer3 = optim.Adam (
                     discriminator['video'].parameters(),
                     lr=2e-4, betas=(.5, .999), weight_decay=1e-5
                 )
-        opt4 = optim.Adam(
+        optimizer4 = optim.Adam (
                     encoder.parameters(),
                     lr=2e-4, betas=(.5, .999), weight_decay=1e-5
                 )
-        optimizers = MultiOptimizer(opt1, opt2, opt3)
-
-        def sampler(n_samples, type, vlen=None):
-            generator.eval()
-            if type == 'image':
-                return generator.sample_images(
-                            n_samples, conditions
-                        )
-            if type == 'video':
-                return generator.sample_videos(
-                            n_samples, conditions, vlen
-                        )
-            else:
-                raise TypeError('Wrong discriminator type')
 
         batch_No = 0
-        logs = dict.fromkeys(logs, 0)
+        writer = SummaryWriter()
         time_per_epoch =- time.time()
+        pos_pairs, neg_pairs = {}, {}
+        logs = {'image dis': 0, 
+                'video dis': 0, 
+                'encoder'  : 0, 
+                'generator': 0}
 
         while True:
-            optimizers.zero_grad()
-            for type in ['image', 'video']:
-                gen_pairs = makePairsFromGenerated()
-                neg_pairs = sampleWrongAssociations()
-                pos_pairs = sampleProperAssociations()
+            pos_pairs['video'] = next(self.video_loader)
 
-                pos_scores = discriminator[type](pos_pairs)
-                neg_scores = discriminator[type](neg_pairs)
-                gen_scores = discriminator[type](gen_pairs)
+            # if this does not work, try np.rec.array right here
+
+            labels = pos_pairs['video'].f0
+            videos = pos_pairs['video'].f1
+
+            images = videos [
+                np.arange(self.batch_size), 
+                np.random.choice(self.vlen, self.batch_size), ...
+            ]
+            im_sh = images.shape[1:]
+
+            neg_pairs['video'] = np.rec.fromarrays (
+                (np.roll(labels, 1), videos),
+                dtype=pos_pairs.dtype
+            )
+            pos_pairs['image'] = np.rec.fromarrays (
+                (labels, images),
+                dtype=[('', '<U2'), ('', 'uint8', im_sh)]
+            )
+            neg_pairs['image'] = np.rec.fromarrays (
+                (np.roll(labels, -1), images),
+                dtype=pos_pairs['image'].dtype
+            )
+
+            optimizer1.zero_grad()
+            optimizer2.zero_grad()
+            optimizer3.zero_grad()
+            optimizer4.zero_grad()
+            for type in ['image', 'video']:
+                pos_scores = discriminator[type](pos_pairs[type])
+                neg_scores = discriminator[type](neg_pairs[type])
+                gen_scores = discriminator[type](gen_pairs[type])
 
                 l1 = torch.log(pos_scores).mean()
                 l2 = torch.log1p(-neg_scores).mean()
@@ -114,7 +113,7 @@ class Trainer:
                 logs[f"{type} dis"] += dis_loss.item()
                 (-dis_loss).backward()
 
-                # calculate_grad_penalty
+                # write grad_penalty
 
                 generator.train()
                 discriminator[type].eval()
@@ -125,22 +124,25 @@ class Trainer:
 
                 logs['encoder'] += (l1 + l2).item()
 
-            optimizers.step()
+            optimizer1.step()
+            optimizer2.step()
+            optimizer3.step()
+            optimizer4.step()
             batch_No += 1
 
             if batch_No % self.log_interval == 0:
 
-                log_string = f"Batch {batch_No}" 
+                print(f"Batch {batch_No}")
                 for k, v in logs.items():
-                    log_string += " [%s] %5.3f" % (k, v / self.log_interval)
+                    print("\t%s\t%5.3f" % (k, v / self.log_interval)
 
                 time_per_epoch += time.time()
-                log_string += ". Took %5.2f" % time_per_epoch 
-
-                print(log_string)
+                print("Completed in %.f" % time_per_epoch)
 
                 for tag, value in logs.items():
-                    writer.add_scalar(tag, value / self.log_interval, batch_No)
+                    writer.add_scalar (
+                        tag, value / self.log_interval, batch_No
+                    )
 
                 logs = dict.fromkeys(logs, 0)
                 time_per_epoch =- time.time()
@@ -153,13 +155,13 @@ class Trainer:
                 videos = generator.sample_videos(self.video_batch_size)
                 writer.add_video("Videos", videos_to_numpy(videos), batch_No)
 
-                torch.save(
+                torch.save (
                         generator.state_dict(), 
                         self.log_folder / 'gen_%05d.pytorch' % batch_No
                     )
 
             if batch_No >= self.num_batches:
-                torch.save(
+                torch.save (
                         generator.state_dict(), 
                         self.log_folder / 'gen_%05d.pytorch' % batch_No
                     )

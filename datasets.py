@@ -1,5 +1,4 @@
 import json
-import pickle
 
 import cv2
 import numpy as np
@@ -9,8 +8,8 @@ from pathlib import Path
 from torch.utils.data import Dataset
 
 class VideoDataset(Dataset):
-    def __init__(self, path, cache, vlen, 
-                 step=1, ext='webm', transform=None):
+    def __init__(self, path, cache, 
+                 step=1, transform=None, ext='webm'):
         self.transform = transform
 
         path = Path(path)
@@ -18,8 +17,7 @@ class VideoDataset(Dataset):
 
         cache = Path(cache)
         if (cache / file_name).exists():
-            with open(cache / file_name, 'rb') as fh:
-                self.data = pickle.load(fh)
+            self.data = np.load(cache / file_name)
         else:
             self.data = []
             durations = []
@@ -47,36 +45,42 @@ class VideoDataset(Dataset):
                 assert len(frames) > 0, \
                 "Something went wrong, no frames were extracted"
                 durations.append(len(frames)) 
-
-                self.data.append([sample['label'], frames])
+                self.data.append((sample['label'], frames))
             
-            with open(cache / f'{file_name}.db', 'wb') as fh:
-                pickle.dump(self.data, fh)
-                pickle.dump(durations, fh)
+            durations = np.array(durations, 'uint16')
+
+            vlen = durations.min()
+            N = vlen // step + 1
+            self.data = np.rec.array (
+                [(x, y[:vlen:step]) for x, y in self.data],
+                [('', 'O'), ('', 'uint8', (N, *image.shape)]
+            )
+            np.savez (
+                cache / f'{file_name}.db', 
+                self.data, durations
+            )
 
     def __getitem__(self, index):
-        label, frames = self.data[index]
-        return {'label'  : label, 
-                'values' : self.transform(frames[::step])}
+        return self.data[index]
 
     def __len__(self):
         return len(self.data)
         
-        
+
 
 class ImagesFromVideoDataset(Dataset):
     def __init__(self, path, transform=None):
         with open(path, 'rb') as fh:
-            self.data = pickle.load(fh)
-            self.scan_r = np.cumsum(pickle.load(fh))
-            self.scan_l = np.r_[0, self.scan_r[:-1]]    
+            self.data = np.load(fh)
+            self.scan_r = np.cumsum(np.load(fh))
+        self.scan_l = np.r_[0, self.scan_r[:-1]]    
 
         self.transform = transform if transform else lambda x: x
 
     def __getitem__(self, index):
         vi_no = np.searchsorted(self.scan_r, index, 'right')
         im_no = index - self.scan_l[vi_no] 
-        label, frames = self.data  [vi_no]
+        label, frames = self.data[vi_no]
 
         # further, label may be changed to placeholders
         return {'label'  : label, 
