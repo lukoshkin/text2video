@@ -1,4 +1,3 @@
-import json
 import pickle
 
 import cv2
@@ -6,11 +5,14 @@ import numpy as np
 
 from tqdm import tqdm
 from pathlib import Path
+from smart_open import open
 from torch.utils.data import Dataset
+from text_processing import doTextPart
 
 class VideoDataset(Dataset):
     def __init__(self, path, cache, 
                  video_shape=(32, 64, 64, 3), 
+                 min_word_freq = 2, check_spell=False,
                  step=2, transform=None, ext='webm'):
         self.transform = transform
 
@@ -25,14 +27,19 @@ class VideoDataset(Dataset):
             self.data = []
             cache.mkdir(parents=True, exist_ok=True)
 
-            with open(path) as fp:
-                raw_data = json.load(fp)
-            
+            max_len, t2i, df = doTextPart (
+                            path, cache, 
+                            min_word_freq, 
+                            check_spell
+                        )
             mult = []
             corrupted = 0
             D, H, W, C = video_shape
             folder = path.parents[0]
-            for sample in tqdm(raw_data, "Preparing dataset"):
+            pbar = tqdm (
+                df.iterrows(), "Preparing dataset", len(df)
+            )
+            for _, sample in pbar:
                 video = folder / f"{sample['id']}.{ext}"
                 ViCap = cv2.VideoCapture(str(video))
                 _D = ViCap.get(cv2.CAP_PROP_FRAME_COUNT)
@@ -55,9 +62,13 @@ class VideoDataset(Dataset):
 
                 if CNT == D * mult[-1]:
                     frames = np.array(frames, 'uint8')
+
+                    numerated = np.zeros(max_len)
+                    filling = [t2i[w] for w in sample['label']]
+                    numerated[:len(filling)] = filling
+                    
                     self.data.append (
-                        (  sample['label'], 
-                           frames[::step * mult[-1]]  )
+                        (numerated, frames[::step * mult[-1]])
                     )
                 else:
                     corrupted += 1
