@@ -6,19 +6,12 @@ import torch
 import torch.optim as optim
 
 from torch import nn
+from torch.autograd import grad as getGrads
+
 from pathlib import Path
-from tensorboardX import SummaryWriter
+from torch.utils.tensorboard import SummaryWriter
 
-def images_to_numpy(tensor):
-    generated = (torch.clamp(tensor, -1, 1) + 1) / 2 * 255
-    generated = generated.data
-                         .cpu()
-                         .numpy()
-                         .transpose(0, 2, 3, 1)
-
-    return generated.astype('uint8')
-
-def videos_to_numpy(tensor):
+def to_video(tensor):
     generated = (torch.clamp(tensor, -1, 1) + 1) / 2 * 255
     generated = generated.data
                          .cpu()
@@ -32,14 +25,37 @@ def videos_to_numpy(tensor):
 class Trainer:
     def __init__(self, video_loader, batch_size,
                  log_interval, num_batches, log_folder) 
-
         self.num_batches  = num_batches
         self.video_loader = video_loader
         self.log_interval = log_interval
         self.batch_size = self.batch_size
         self.log_folder = Path(log_folder)
 
-    def train(self, generator, discriminator, encoder):
+    def zeroCentredGradPenalty(self, output, input):
+        jacobian = torch.autograd.grad (
+                    outputs=output,
+                    inputs=input,
+                    grad_outputs=torch.ones_like(output),
+                    create_graph=True
+                )[0]
+        jacobian = jacobian.view(jacobian.size(0), -1)
+
+        return self.lambda * ((jacobian.norm(dim=1) - 1) ** 2).mean()
+
+    def composeBatchofImages(self, videos):
+        images = videos [
+            torch.arange(self.batch_size),
+            :,
+            torch.multinomial (
+                torch.ones(self.vlen), 
+                self.batch_size
+            ),
+            ... ]
+
+        return images
+    
+
+    def train(self, generator, discriminators, encoder):
         optimizer1 = optim.Adam (
                     generator.parameters(), 
                     lr=2e-4, betas=(.5, .999), weight_decay=1e-5
@@ -67,62 +83,58 @@ class Trainer:
                 'generator': 0}
 
         while True:
-            pos_pairs['video'] = next(self.video_loader)
+            # >>> form training pairs >>>
+            labels, videos = next(self.video_loader).values()
+            images = self.composeBatchOfImages(videos)
 
-            # if this does not work, try np.rec.array right here
+            at_image = content_encoder(labels)
+            at_video = momentum_encoder(labels)
 
-            labels = pos_pairs['video'].f0
-            videos = pos_pairs['video'].f1
+            pos_pairs['video'] = (at_video, videos)
+            neg_pairs['video'] = (torch.roll(at_image, 1, 0), videos) 
+            neg_pairs['video'][0].register_hook(lambda grad: grad * 2)
 
-            images = videos [
-                np.arange(self.batch_size), 
-                np.random.choice(self.vlen, self.batch_size), ...
-            ]
-            im_sh = images.shape[1:]
+            pos_pairs['image'] = (at_image, images)
+            neg_pairs['image'] = (torch.roll(at_image, -1, 0), images)
+            neg_pairs['image'][0].register_hook(lambda grad: grad * 2)
 
-            neg_pairs['video'] = np.rec.fromarrays (
-                (np.roll(labels, 1), videos),
-                dtype=pos_pairs.dtype
-            )
-            pos_pairs['image'] = np.rec.fromarrays (
-                (labels, images),
-                dtype=[('', '<U2'), ('', 'uint8', im_sh)]
-            )
-            neg_pairs['image'] = np.rec.fromarrays (
-                (np.roll(labels, -1), images),
-                dtype=pos_pairs['image'].dtype
-            )
+            conditions  = (at_image.detach(), at_video.detach())
+            fake_videos = generator(self.batch_size, conditions)
+            fake_images = self.composeBatchOfImages(fake_videos)
+
+            fake_videos.register_hook(lambda grad: -grad)
+            fake_images.register_hook(lambda grad: -grad)
+            
+            gen_pairs['video'] = (conditions[1], fake_videos)
+            gen_pairs['image'] = (conditions[0], fake_images)
+            samples = {'video': videos, 'image': images}
+            # <<< form training pairs <<<
 
             optimizer1.zero_grad()
             optimizer2.zero_grad()
             optimizer3.zero_grad()
             optimizer4.zero_grad()
-            for type in ['image', 'video']:
-                pos_scores = discriminator[type](pos_pairs[type])
-                neg_scores = discriminator[type](neg_pairs[type])
-                gen_scores = discriminator[type](gen_pairs[type])
 
-                l1 = torch.log(pos_scores).mean()
-                l2 = torch.log1p(-neg_scores).mean()
-                l3 = torch.log1p(-gen_scores).mean()
-                
-                generator.eval()
-                discriminator[type].train()
+            for kind in ['image', 'video']:
+                pos_scores = dis[kind](*pos_pairs[kind])
+                neg_scores = dis[kind](*neg_pairs[kind])
+                gen_scores = dis[kind](*gen_pairs[kind])
 
-                dis_loss = l1 + .5 * (l2 + l3)
-                logs[f"{type} dis"] += dis_loss.item()
-                (-dis_loss).backward()
+                L1 = torch.log(pos_scores).mean()
+                L2 = .5 * torch.log1p(-neg_scores).mean()
+                L3 = .5 * torch.log1p(-gen_scores).mean()
 
-                # write grad_penalty
+                autograd.backward([L1, L2, L3])
 
-                generator.train()
-                discriminator[type].eval()
+                logs[f"{kind} dis"] += (L1 + L2 + L3).item()
+                logs['generator'] += L3.item()
+                logs['encoder'] += (L1 + 2 * L2).item()
 
-                gen_loss = .5 * (l3 - l2)
-                logs['generator'] += gen_loss.item()
-                gen_loss.backward()
+                gp_loss = self.zeroCentredGradPenalty(
+                                pos_scores, samples[kind])
+                gp_loss.backward()
 
-                logs['encoder'] += (l1 + l2).item()
+                logs[f'{kind} dis'] += gp_loss
 
             optimizer1.step()
             optimizer2.step()
@@ -131,18 +143,15 @@ class Trainer:
             batch_No += 1
 
             if batch_No % self.log_interval == 0:
-
                 print(f"Batch {batch_No}")
                 for k, v in logs.items():
-                    print("\t%s\t%5.3f" % (k, v / self.log_interval)
+                    print("\t%s:\t%5.3f" % (k, v / self.log_interval)
 
                 time_per_epoch += time.time()
                 print("Completed in %.f" % time_per_epoch)
 
-                for tag, value in logs.items():
-                    writer.add_scalar (
-                        tag, value / self.log_interval, batch_No
-                    )
+                logs = {k, v / self.log_interval for k, v in logs.items()}
+                writer.add_scalars('Losses', logs, batch_No)
 
                 logs = dict.fromkeys(logs, 0)
                 time_per_epoch =- time.time()
@@ -153,7 +162,7 @@ class Trainer:
                 writer.add_images("Images", images, batch_No)
 
                 videos = generator.sample_videos(self.video_batch_size)
-                writer.add_video("Videos", videos_to_numpy(videos), batch_No)
+                writer.add_video("Videos", to_video(videos), batch_No)
 
                 torch.save (
                         generator.state_dict(), 

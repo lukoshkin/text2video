@@ -10,11 +10,13 @@ from torch.utils.data import Dataset
 from text_processing import doTextPart
 
 class VideoDataset(Dataset):
-    def __init__(self, path, cache, 
+    def __init__(self, 
+                 path, cache, 
                  video_shape=(32, 64, 64, 3), 
                  min_word_freq = 2, check_spell=False,
                  step=2, transform=None, ext='webm'):
-        self.transform = transform
+        self.transform = transform if transform \
+                                 else lambda x: x
 
         path = Path(path)
         file_name = path.stem.split('.')[0]
@@ -63,7 +65,7 @@ class VideoDataset(Dataset):
                 if CNT == D * mult[-1]:
                     frames = np.array(frames, 'uint8')
 
-                    numerated = np.zeros(max_len)
+                    numerated = np.zeros(max_len, 'float32')
                     filling = [t2i[w] for w in sample['label']]
                     numerated[:len(filling)] = filling
                     
@@ -82,7 +84,7 @@ class VideoDataset(Dataset):
         label, video = self.data[index]
 
         return {'label' : label, 
-                'video' : video}
+                'video' : self.transform(video)}
 
     def __len__(self):
         return len(self.data)
