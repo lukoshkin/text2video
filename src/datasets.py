@@ -9,7 +9,7 @@ from smart_open import open
 from torch.utils.data import Dataset
 from text_processing import doTextPart
 
-class VideoDataset(Dataset):
+class LabeledVideoDataset(Dataset):
     def __init__(self, 
                  path, cache, 
                  video_shape=(32, 64, 64, 3), 

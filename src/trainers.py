@@ -42,7 +42,7 @@ class Trainer:
 
         return self.lambda * ((jacobian.norm(dim=1) - 1) ** 2).mean()
 
-    def composeBatchofImages(self, videos):
+    def composeBatchOfImages(self, videos):
         images = videos [
             torch.arange(self.batch_size),
             :,
@@ -53,42 +53,40 @@ class Trainer:
             ... ]
 
         return images
-    
 
-    def train(self, generator, discriminators, encoder):
+    def train(self, generator, dis_dict, text_encoder):
         optimizer1 = optim.Adam (
                     generator.parameters(), 
                     lr=2e-4, betas=(.5, .999), weight_decay=1e-5
                 )
         optimizer2 = optim.Adam (
-                    discriminator['image'].parameters(), 
+                    dis_dict['image'].parameters(), 
                     lr=2e-4, betas=(.5, .999), weight_decay=1e-5
                 )
         optimizer3 = optim.Adam (
-                    discriminator['video'].parameters(),
+                    dis_dict['video'].parameters(),
                     lr=2e-4, betas=(.5, .999), weight_decay=1e-5
                 )
         optimizer4 = optim.Adam (
-                    encoder.parameters(),
+                    text_encoder.parameters(),
                     lr=2e-4, betas=(.5, .999), weight_decay=1e-5
                 )
 
         batch_No = 0
         writer = SummaryWriter()
         time_per_epoch =- time.time()
-        pos_pairs, neg_pairs = {}, {}
+        pos_pairs, neg_pairs, gen_pairs = {}, {}, {}
         logs = {'image dis': 0, 
                 'video dis': 0, 
                 'encoder'  : 0, 
                 'generator': 0}
 
         while True:
-            # >>> form training pairs >>>
+            # form training pairs 
             labels, videos = next(self.video_loader).values()
             images = self.composeBatchOfImages(videos)
 
-            at_image = content_encoder(labels)
-            at_video = momentum_encoder(labels)
+            (at_video, at_image), A = text_encoder(labels)
 
             pos_pairs['video'] = (at_video, videos)
             neg_pairs['video'] = (torch.roll(at_image, 1, 0), videos) 
@@ -98,7 +96,7 @@ class Trainer:
             neg_pairs['image'] = (torch.roll(at_image, -1, 0), images)
             neg_pairs['image'][0].register_hook(lambda grad: grad * 2)
 
-            conditions  = (at_image.detach(), at_video.detach())
+            conditions  = (at_video.detach(), at_image.detach())
             fake_videos = generator(self.batch_size, conditions)
             fake_images = self.composeBatchOfImages(fake_videos)
 
@@ -108,40 +106,52 @@ class Trainer:
             gen_pairs['video'] = (conditions[1], fake_videos)
             gen_pairs['image'] = (conditions[0], fake_images)
             samples = {'video': videos, 'image': images}
-            # <<< form training pairs <<<
 
+            # clear accumulated grad-s
             optimizer1.zero_grad()
             optimizer2.zero_grad()
             optimizer3.zero_grad()
             optimizer4.zero_grad()
 
             for kind in ['image', 'video']:
-                pos_scores = dis[kind](*pos_pairs[kind])
-                neg_scores = dis[kind](*neg_pairs[kind])
-                gen_scores = dis[kind](*gen_pairs[kind])
+                pos_scores = dis_dict[kind](*pos_pairs[kind])
+                neg_scores = dis_dict[kind](*neg_pairs[kind])
+                gen_scores = dis_dict[kind](*gen_pairs[kind])
 
+                # compute base loss temrs
                 L1 = torch.log(pos_scores).mean()
                 L2 = .5 * torch.log1p(-neg_scores).mean()
                 L3 = .5 * torch.log1p(-gen_scores).mean()
 
                 autograd.backward([L1, L2, L3])
 
-                logs[f"{kind} dis"] += (L1 + L2 + L3).item()
+                logs[f'{kind} dis'] += (L1 + L2 + L3).item()
                 logs['generator'] += L3.item()
                 logs['encoder'] += (L1 + 2 * L2).item()
 
+                # calculate grad. penalty loss and log it
                 gp_loss = self.zeroCentredGradPenalty(
                                 pos_scores, samples[kind])
                 gp_loss.backward()
+                logs[f'{kind} dis'] += gp_loss.item()
 
-                logs[f'{kind} dis'] += gp_loss
+            # calculate sameness penalty and log it
+            AAt = torch.einsum('ikp,ikq->ipq', A, A)
+            sp_loss = torch.norm (
+                        AAt - torch.eye(AAt.size(1)), 
+                        dim=(1, 2)
+                    ) ** 2
+            sp_loss.backward()
+            logs['encoder'] += sp_loss.item()
 
+            # do gradient descent steps
             optimizer1.step()
             optimizer2.step()
             optimizer3.step()
             optimizer4.step()
             batch_No += 1
 
+            # write log info and save generator every several epochs
             if batch_No % self.log_interval == 0:
                 print(f"Batch {batch_No}")
                 for k, v in logs.items():
@@ -158,9 +168,6 @@ class Trainer:
 
                 generator.eval()
 
-                images = generator.sample_images(self.image_batch_size)
-                writer.add_images("Images", images, batch_No)
-
                 videos = generator.sample_videos(self.video_batch_size)
                 writer.add_video("Videos", to_video(videos), batch_No)
 
@@ -169,6 +176,8 @@ class Trainer:
                         self.log_folder / 'gen_%05d.pytorch' % batch_No
                     )
 
+            # save generator and exit when the number of specified batches
+            # is exceeded
             if batch_No >= self.num_batches:
                 torch.save (
                         generator.state_dict(), 
