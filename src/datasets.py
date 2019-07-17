@@ -55,7 +55,9 @@ class LabeledVideoDataset(Dataset):
                 while success and (CNT < D * mult[-1]):
                     success, image = ViCap.read()
                     if success:
-                        image = cv2.resize(image, (H, W))
+                        image = cv2.resize(
+                                image, (H, W), 
+                                interpolation=cv2.INTER_AREA)
                         frames += [image]
                         CNT += 1
 
