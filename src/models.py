@@ -2,10 +2,6 @@ import torch
 import torch.nn as nn
 import torch.utils.data
 
-device = torch.device (
-            'cuda' if torch.cuda.is_available() else 'cpu'
-        )
-
 class Noise(nn.Module):
     def __init__(self, noise, sigma=0.2):
         super().__init__()
@@ -29,7 +25,7 @@ class TextEncoder(nn.Module):
                         padding_idx=0 
                     )
         emb_size = emb_weights.size(1)
-        self.sp = emb_size
+        self.sp = emb_size * 2
 
         self.attention = nn.Sequential (
                 nn.Linear(emb_size * 2, hyppar),
@@ -43,12 +39,12 @@ class TextEncoder(nn.Module):
         )
 
         self.cnn = nn.Sequential (
-            nn.Conv1d(emb_size, emb_size * 2, 5, 1, 2)
-            nn.LeakyReLU(0.2, True)
-            nn.MaxPool1d(2)
-            nn.Conv1d(emb_size * 2, emb_size * 4, 3, 1, 1)
-            nn.LeakyReLU(0.2, True)
-            nn.MaxPool1d(2)
+            nn.Conv1d(emb_size, emb_size * 2, 5, 1, 2),
+            nn.LeakyReLU(.2, True),
+            nn.MaxPool1d(2),
+            nn.Conv1d(emb_size * 2, emb_size * 4, 3, 1, 1),
+            nn.LeakyReLU(.2, True),
+            nn.MaxPool1d(2),
             nn.Conv1d(emb_size * 4, emb_size * 4, 3, 1, 1)
         )
 
@@ -57,208 +53,226 @@ class TextEncoder(nn.Module):
         H = self.lstm(E)[0]
 
         A = self.attention(H)
-        # batch_size x sen_len x n_spots
+        # << batch_size x sen_len x n_spots
         M = torch.einsum('ikp,ikq->ipq', A, H)
-        # batch_size x n_spots x (emb_size * 2)
+        # << batch_size x n_spots x (emb_size * 2)
 
-        H = self.cnn(E)
-        C = H[:, :self.sp] * torch.sigmoid(H[:, self.sp:]
-        # batch_size x ceil(ceil(sen_len / 2) / 2) x (emb_size * 2)
+        H = self.cnn(E.permute(0, 2, 1))
+        C = H[:, :self.sp] * torch.sigmoid(H[:, self.sp:])
+        # << batch_size x ceil(ceil(sen_len / 2) / 2) x (emb_size * 2)
 
         return (M, C), A
 
 
 
-class ResNetBlockLike(nn.Module):
+class ResNetBottleneck(nn.Module):
+    """
+        Args:
+            type        2d or 3d data
+            width       width of bottleneck
+            stride      convolution stride (int or tuple of ints)
+            noise       boolen flag: use Noise layer or do not 
+            sigma       standard deviation of the gaussian noise
+                        used in Noise layer
+    """
     def __init__(
-            self, type, in_channels, out_channels, 
-            kernel_size=4, stride=None, padding=None, 
-            noise=False, sigma=None):
+            self, type, in_channels, out_channels,
+            stride=1, width=None, noise=False, sigma=None):
         super().__init__()
 
-        # default arguments
-        if stride is None:
-            stride = (1, 2, 2) if type == 'video' else 2
-        if padding is None:
-            padding = (0, 1, 1) if type == 'video' else 1
-
-        if type == 'video':
+        if type == '3d':
             Convolution = nn.Conv3d
             BatchNorm = nn.BatchNorm3d
-        elif type == 'image':
+        elif type == '2d':
             Convolution = nn.Conv2d
             BatchNorm = nn.BatchNorm2d
         else:
             raise TypeError (
-                "__init__(): argument 'type' " 
-                "must be 'video' or 'image'"
+                "__init__(): argument 'type' "
+                "must be '2d' or '3d'"
             )
 
         self.proj = None
-        if in_channels != out_channels:
+        if ((torch.tensor(stride) > 1).any() or 
+                in_channels != out_channels):
             self.proj = Convolution(
-                in_channels, out_channels, 1, stride)
+                    in_channels, out_channels, 1, stride)
+            
+        if not width:
+            width = (in_channels + out_channels) // 4
 
         self.main = nn.Sequential (
             Noise(noise, sigma=sigma),
-            Convolution(
-                in_channels, out_channels, 
-                kernel_size, stride, 
-                padding, bias=False),
+            Convolution(in_channels, width, 1, bias=False),
+            BatchNorm(width),
+            nn.LeakyReLU(.2, True),
+
+            Noise(noise, sigma=sigma),
+            Convolution(width, width, 3, stride, 1, bias=False),
+            BatchNorm(width),
+            nn.LeakyReLU(.2, True),
+
+            Noise(noise, sigma=sigma),
+            Convolution(width, out_channels, 1, bias=False),
             BatchNorm(out_channels),
-            nn.LeakyReLU(0.2, True)
+            nn.LeakyReLU(.2, True),
         )
 
     def forward(self, x):
         y = self.main(x)
         if self.proj is not None:
             x = self.proj(x)
-
+            
         return y + x
 
 
 
-class TypeDiscriminator(nn.Module):
+class VideoDiscriminator(nn.Module):
     def __init__(
-            self, type, in_channels, cond_size, emb_size,
+            self, in_channels, cond_shape=(8, 100),
             base_width=32, noise=False, sigma=None):
         super().__init__()
 
-        self.mixer = nn.Parameter(torch.Tensor(3, cond_size))
-        #nn.init.xavier_normal_(self.mixer)
-        self.dense_shaper1 = nn.Linear(emb_size, 8 * 8 * 5 * 5)
+        self.mixer = nn.Parameter(torch.Tensor(3, cond_shape[0]))
+        nn.init.kaiming_uniform_(self.mixer, a=(5**.5))
 
-        self.Conv = nn.Conv3d if type == 'video' else nn.Conv2d
+        self.dense_shaper11 = nn.Linear(cond_shape[1], 8*8*3*5*5) 
+        self.dense_shaper12 = nn.Linear(cond_shape[1], 16*16*3*3) 
+        self.dense_shaper13 = nn.Linear(cond_shape[1], 32*32*3) 
 
+        # stacked discriminator components
         self.D1 = nn.Sequential (
-            self.Conv(in_channels, base_width, 1), 
-            ResNetBlockLike(type, base_width, base_width * 2),
-            ResNetBlockLike(type, base_width * 2, base_width * 4)
+            nn.Conv3d(in_channels, base_width, 1), 
+            ResNetBottleneck('3d', base_width, base_width*2, 2),
         )
         self.D2 = nn.Sequential (
-            ResNetBlockLike(type, base_width * 4, base_width * 4),
-            ResNetBlockLike(type, base_width * 4, base_width * 4),
+            ResNetBottleneck('3d', base_width*2, base_width*4, 2),
+            ResNetBottleneck('3d', base_width*4, base_width*4, (1,2,2)),
         )
         self.D3 = nn.Sequential (
-            ResNetBlockLike(type, base_width * 4, base_width * 8),
-            ResNetBlockLike(type, base_width * 8, base_width * 8),
+            ResNetBottleneck('3d', base_width*4, base_width*4, 2),
+            ResNetBottleneck('3d', base_width*4, base_width*8, 2),
         )
 
-        self.conv_shaper1 = nn.Sequential (
-            self.Conv(base_width * 4, 8),
-            # not implemented
-            nn.AvgPool2d(2)
+        # 1x1 convolutions to obtain desired shapes
+        self.conv_shaper1 = nn.Conv3d(base_width*2, 8, 1)
+        self.conv_shaper2 = nn.Conv3d(base_width*4, 16, 1)
+        self.conv_shaper3 = nn.Conv3d(base_width*8, 32, 1) 
+
+        self.processor1 = nn.Sequential (
+            nn.Conv3d(8, 8, 3, 2, 1),
+            nn.LeakyReLU(.2, True),
+            nn.Conv3d(8, 8, 3, 2, 1),
+            nn.LeakyReLU(.2, True)
         )
-        self.conv_shaper2 = nn.Sequential (
-            self.Conv(base_width * 4, 8),
-            # not implemented
+        self.processor2 = nn.Sequential (
+            nn.Conv3d(16, 16, 3, 2, 1),
+            nn.LeakyReLU(.2, True)
         )
-        self.dense_shaper2 = nn.Linear(calc_in_feats, 128)
+
+        self.dense_shaper21 = nn.Linear(8*4*4, 128)
+        self.dense_shaper22 = nn.Linear(16*2*2*2, 128)
+        self.dense_shaper23 = nn.Linear(32*2*2, 128)
+        
+        self.leaky = nn.LeakyReLU(.2, True)
 
     def forward(self, input, condition):
-        interim = torch.einsum('ink,mn->imk', condition, self.mixer)
-        filters = torch.relu(self.dense_shaper1(interim))
+        interim = self.mixer @ condition
+        # << interim.shape: 
+        # << batch_size x 3 x cond_shape[1]
 
-        temp1 = self.D1(input)
-        temp2 = self.D2(temp1)
-        out1 = self.conv_shaper1(temp1).view(-1, 128)
-        out2 = self.conv_shaper2(temp2).view(-1, 128)
-        out3 = self.dense_shaper2(self.D3(temp2))
+        filter1 = self.dense_shaper11(self.leaky(interim[:, 0]))
+        filter2 = self.dense_shaper12(self.leaky(interim[:, 1]))
+        filter3 = self.dense_shaper13(self.leaky(interim[:, 2]))
+        # << filter.shape: 
+        # << batch_size x dense_shaper.out_features
 
-        # not implemented 
+        # pass through the stacked discriminator
+        out1 = self.D1(input)
+        out2 = self.D2(out1)
+        out3 = self.D3(out2)
 
-        return 
+        # >> batch size
+        N = input.size(0)
+
+        out1 = torch.conv3d(
+                self.conv_shaper1(out1).view(1,-1,8,32,32),
+                filter1.view(-1,8,3,5,5), stride=2, 
+                padding=(1,2,2), groups=N).view(-1,8,4,16,16)
+        out2 = torch.conv3d(
+                self.conv_shaper2(out2).view(1,-1,4,8,8), 
+                filter2.view(-1,16,1,3,3), stride=(1,2,2), 
+                padding=(0,1,1), groups=N).view(-1,16,4,4,4)
+        out3 = torch.conv1d(
+                self.conv_shaper3(out3).view(1,-1,4), 
+                filter3.view(-1,32,3), stride=1,
+                padding=1, groups=N).view(-1,32*4)
+
+        out1 = torch.flatten(self.processor1(out1), 1)
+        out2 = torch.flatten(self.processor2(out2), 1)
+
+        out1 = self.dense_shaper21(out1)
+        out2 = self.dense_shaper22(out2)
+        out3 = self.dense_shaper23(out3)
+
+        return torch.cat((out1,out2,out3), 1)
 
 
 
 class VideoGenerator(nn.Module):
     def __init__(
-            self, n_channels, dim_zC, dim_zM, 
-            dim_Cond=0, ngf=64, video_length=16):
+            self, dim_Z, cond_shape, 
+            n_colors=3, base_width=32, video_length=16):
         super().__init__()
-
-        self.inc = n_channels # in-colors
-        self.dim_zC = dim_zC
-        self.dim_zM = dim_zM
+        self.dim_Z = dim_Z
+        self.n_colors = n_colors
         self.vlen = video_length
-        self.code_dims = {'image' : dim_zC + dim_Cond,
-                          'video' : dim_zM + dim_Cond}
+        self.code_size = dim_Z + cond_shape[1]
 
-        if dim_Cond:
-            self.fc = nn.Linear(dim_Cond, dim_Cond)
+        self.mixer = nn.Parameter(
+                torch.Tensor(self.vlen, cond_shape[0]))
+        nn.init.kaiming_uniform_(self.mixer, a=np.sqrt(5))
 
-        self.RNN = nn.GRUCell(dim_zM, dim_zM)
+        self.gru = nn.GRU(
+                self.code_size, self.code_size, batch_first=True)
 
-        dim_Z = dim_zM + dim_zC + dim_Cond
         self.main = nn.Sequential (
-            nn.ConvTranspose2d(dim_Z, ngf * 8, 4, 1, 0, bias=False),
-            nn.BatchNorm2d(ngf * 8),
-            nn.ReLU(True),
+            ResNetBottleneck('3d', self.code_size, base_width*8),
+            nn.Upsample(scale_factor=2, mode='trilinear'),
 
-            nn.ConvTranspose2d(ngf * 8, ngf * 4, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(ngf * 4),
-            nn.ReLU(True),
+            ResNetBottleneck('3d', base_width*8, base_width*4, (2,1,1)),
+            nn.Upsample(scale_factor=2, mode='trilinear'),
 
-            nn.ConvTranspose2d(ngf * 4, ngf * 2, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(ngf * 2),
-            nn.ReLU(True),
+            ResNetBottleneck('3d', base_width*4, base_width*4, (2,1,1)),
+            nn.Upsample(scale_factor=2, mode='trilinear'),
 
-            nn.ConvTranspose2d(ngf * 2, ngf, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(ngf),
-            nn.ReLU(True),
+            ResNetBottleneck('3d', base_width*4, base_width*2, (2,1,1)),
+            nn.Upsample(scale_factor=2, mode='trilinear'),
 
-            nn.ConvTranspose2d(ngf, self.inc, 4, 2, 1, bias=False),
+            ResNetBottleneck('3d', base_width*2, base_width, (2,1,1)),
+            nn.Upsample(scale_factor=2, mode='trilinear'),
+
+            ResNetBottleneck('3d', base_width, base_width, (2,1,1)),
+            nn.Upsample(scale_factor=2, mode='trilinear'),
+
+            nn.Conv3d(base_width, self.n_colors, 3, (2,1,1), 1),
             nn.Tanh()
         )
 
-    def sample_zM(self, n_samples, condition, vlen=None):
+    def forward(self, text_features, vlen=None):
         vlen = vlen if vlen else self.vlen
 
-        emb_size = self.code_dims['video']
-        code = torch.randn (
-                    vlen + 1, n_samples, emb_size, 
-                    device=device
-                )
-        if condition is not None:
-            code[:, self.dim_zM:] = condition
+        # >> mixer matrix is used here just to create 'code' 
+        # >> tensor on the right gpu node with .new() method
+        code = self.mixer.new(
+            len(text_features), vlen+1, self.code_size).normal_()
 
-        h = [code[-1]]
-        for i in range(vlen):
-            h.append(self.RNN(code[i], h[-1]))
+        condition = torch.einsum(
+                'ink,mn->imk', text_features, self.mixer)
 
-        return torch.stack(h[1:], dim=1) \
-                    .view(-1, emb_size)
+        code[:, 1:, self.dim_Z:] = condition
 
-    def sample_zC(self, n_samples, condition, vlen=None):
-        vlen = vlen if vlen else self.vlen
+        H = self.gru(code[:, 1:], code[None, :, 0])[0] \
+                .permute(0, 2, 1)[..., None, None]
 
-        emb_size = self.code_dims['image']
-        code = torch.randn (
-                    n_samples, emb_size, 
-                    device=device
-                )
-        if condition is not None:
-            code[:, self.dim_zC:] = condition
-
-        return code.repeat(1, vlen) \
-                   .view(-1, emb_size)
-
-    def sample_Z(self, n_samples, conditions, vlen=None):
-        at_video, at_image= None, None
-
-        if conditions is not None:
-            at_video, at_image = conditions
-            at_video = self.mixer(at_video)
-
-        zC = self.sample_zC(n_samples, at_image, vlen)
-        zM = self.sample_zM(n_samples, at_video, vlen)
-
-        return torch.cat([zC, zM], dim=1)
-
-    def sample_videos(self, n_samples, conditions, vlen=None):
-        vlen = vlen if vlen else self.vlen
-        z = self.sample_Z(n_samples, conditions, vlen)
-
-        return self.main(z.view(*z.size(), 1, 1)) \
-                   .view(n_samples, vlen, self.inc, *h.size()[3:]) \
-                   .permute(0, 2, 1, 3, 4)
+        return self.main(H)
