@@ -38,9 +38,8 @@ class LabeledVideoDataset(Dataset):
             corrupted = 0
             D, H, W, C = video_shape
             folder = path.parents[0]
-            pbar = tqdm (
-                df.iterrows(), "Preparing dataset", len(df)
-            )
+
+            pbar = tqdm(df.iterrows(), "Preparing dataset", len(df))
             for _, sample in pbar:
                 video = folder / f"{sample['id']}.{ext}"
                 ViCap = cv2.VideoCapture(str(video))
@@ -79,8 +78,10 @@ class LabeledVideoDataset(Dataset):
                     mult.pop()
 
             print('No of corrupted videos', corrupted)
+            print(f'Caching database to {file_name}.db')
             with open(cache / f'{file_name}.db', 'wb') as fp:
                 pickle.dump(self.data, fp)
+            print('Done!')
 
     def __getitem__(self, index):
         label, video = self.data[index]

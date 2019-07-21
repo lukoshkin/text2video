@@ -16,8 +16,21 @@ class Noise(nn.Module):
 
 
 class TextEncoder(nn.Module):
+    """
+    Args:
+        n_spots         number of vectors in attention matrix
+        emb_weights     matrix with embedding in its rows
+
+        set of the rest ('extra') tuning hyperparameters
+
+        hyppar[0]       hyperparameter for attention part
+        hyppar[1]       number of lstm hidden units 
+                        (affects the size of output matrix 'M')
+        hyppar[2]       hyperparameter for small "cnn" 
+                        (affects the size of the ouput matrix 'C')
+    """
     def __init__(
-            self, n_spots, emb_weights, hyppar=64):
+            self, n_spots, emb_weights, hyppar=(64,64,64)):
         super().__init__()
         self.embed = nn.Embedding.from_pretrained (
                         emb_weights, 
@@ -25,28 +38,29 @@ class TextEncoder(nn.Module):
                         padding_idx=0 
                     )
         emb_size = emb_weights.size(1)
-        self.sp = emb_size * 2
 
         self.attention = nn.Sequential (
-                nn.Linear(emb_size * 2, hyppar),
-                nn.Tanh(),
-                nn.Linear(hyppar, n_spots),
-                nn.Softmax(1)
-            )
+            nn.Linear(hyppar[1]*2, hyppar[0]),
+            nn.Tanh(),
+            nn.Linear(hyppar[0], n_spots),
+            nn.Softmax(1)
+        )
         self.lstm = nn.LSTM (
-            emb_size, emb_size, 
+            emb_size, hyppar[1], 
             batch_first=True, bidirectional=True
         )
 
         self.cnn = nn.Sequential (
-            nn.Conv1d(emb_size, emb_size * 2, 5, 1, 2),
+            nn.Conv1d(emb_size, hyppar[2]*2, 5, 1, 2),
             nn.LeakyReLU(.2, True),
             nn.MaxPool1d(2),
-            nn.Conv1d(emb_size * 2, emb_size * 4, 3, 1, 1),
+            nn.Conv1d(hyppar[2]*2, hyppar[2]*4, 3, 1, 1),
             nn.LeakyReLU(.2, True),
             nn.MaxPool1d(2),
-            nn.Conv1d(emb_size * 4, emb_size * 4, 3, 1, 1)
+            nn.Conv1d(hyppar[2]*4, hyppar[2]*4, 3, 1, 1)
         )
+
+        self.sp = hyppar[2] * 2   # split index
 
     def forward(self, text_ids):
         E = self.embed(text_ids)
@@ -55,11 +69,11 @@ class TextEncoder(nn.Module):
         A = self.attention(H)
         # << batch_size x sen_len x n_spots
         M = torch.einsum('ikp,ikq->ipq', A, H)
-        # << batch_size x n_spots x (emb_size * 2)
+        # << batch_size x n_spots x (hyppar[1]*2)
 
         H = self.cnn(E.permute(0, 2, 1))
         C = H[:, :self.sp] * torch.sigmoid(H[:, self.sp:])
-        # << batch_size x ceil(ceil(sen_len / 2) / 2) x (emb_size * 2)
+        # << batch_size x ceil(ceil(sen_len / 2) / 2) x (hyppar[2]*2)
 
         return (M, C), A
 
@@ -67,13 +81,13 @@ class TextEncoder(nn.Module):
 
 class ResNetBottleneck(nn.Module):
     """
-        Args:
-            type        2d or 3d data
-            width       width of bottleneck
-            stride      convolution stride (int or tuple of ints)
-            noise       boolen flag: use Noise layer or do not 
-            sigma       standard deviation of the gaussian noise
-                        used in Noise layer
+    Args:
+        type        2d or 3d data
+        width       width of bottleneck
+        stride      convolution stride (int or tuple of ints)
+        noise       boolen flag: use Noise layer or do not 
+        sigma       standard deviation of the gaussian noise
+                    used in Noise layer
     """
     def __init__(
             self, type, in_channels, out_channels,
@@ -126,39 +140,107 @@ class ResNetBottleneck(nn.Module):
         return y + x
 
 
+class ImageDiscriminator(nn.Module):
+    def __init__(
+            self, in_channels=3, cond_shape=(5, 128),
+            base_width=32, noise=False, sigma=None):
+        super().__init__()
+        
+        # form filters' shape
+        self.mixer = nn.Parameter(torch.Tensor(2, cond_shape[0]))
+        nn.init.kaiming_uniform_(self.mixer, a=(5**.5))
+        self.dense_shaper = nn.Linear(cond_shape[1], 128) 
+
+        # 'partial class' of ResNetBottlneck
+        ResNetBlock = lambda inC, outC, stride: ResNetBottleneck(
+                '2d', inC, outC, stride, noise=noise, sigma=sigma)
+
+        # stacked discriminator components
+        self.D1 = nn.Sequential (
+            nn.Conv2d(in_channels, base_width, 1), 
+            ResNetBlock(base_width, base_width*2, 2)
+        )
+        self.D2 = nn.Sequential (
+            ResNetBlock(base_width*2, base_width*4, 2),
+            ResNetBlock(base_width*4, base_width*4, 2)
+        )
+        self.D3 = nn.Sequential (
+            ResNetBlock(base_width*4, base_width*4, 2),
+            ResNetBlock(base_width*4, base_width*8, 2)
+        )
+
+        # 1x1 convolutions and fc layers to obtain desired shape
+        self.conv_shaper1 = nn.Conv2d(base_width*2, 4, 1, 2)
+        self.conv_shaper2 = nn.Conv2d(base_width*4, 16, 1)
+
+        self.dense_shaper1 = nn.Linear(4*16*16, 128)
+        self.dense_shaper2 = nn.Linear(16*8*8, 128)
+        self.dense_shaper3 = nn.Linear(256*4, 128)
+        
+        self.leaky = nn.LeakyReLU(.2, True)
+
+    def forward(self, input, condition):
+        interim = self.mixer @ condition
+        # << batch_size x 2 x cond_shape[1]
+        filters = self.dense_shaper(self.leaky(interim))
+        # << batch_size x 2 x 128
+        
+        out1 = self.D1(input)
+        out2 = self.D2(out1)
+        out3 = self.D3(out2)
+        
+        out1 = self.conv_shaper1(out1)
+        out2 = self.conv_shaper2(out2)
+
+        out1 = self.dense_shaper1(out1.view(-1,1024)) 
+        out2 = self.dense_shaper2(out2.view(-1,1024)) 
+        out3 = self.dense_shaper3(out3.view(-1,1024))
+        
+        out1 = filters[:, 0] * out1
+        out2 = filters[:, 0] * out2
+
+        return torch.cat((out1,out2,out3), 1)
+
+
 
 class VideoDiscriminator(nn.Module):
     def __init__(
-            self, in_channels, cond_shape=(8, 100),
+            self, in_channels=3, cond_shape=(8, 128),
             base_width=32, noise=False, sigma=None):
         super().__init__()
 
         self.mixer = nn.Parameter(torch.Tensor(3, cond_shape[0]))
         nn.init.kaiming_uniform_(self.mixer, a=(5**.5))
 
+        # fc layers to form desired shapes
         self.dense_shaper11 = nn.Linear(cond_shape[1], 8*8*3*5*5) 
         self.dense_shaper12 = nn.Linear(cond_shape[1], 16*16*3*3) 
         self.dense_shaper13 = nn.Linear(cond_shape[1], 32*32*3) 
 
+        # 'partial class' of ResNetBottlneck
+        ResNetBlock = lambda inC, outC, stride: ResNetBottleneck(
+                '3d', inC, outC, stride, noise=noise, sigma=sigma)
+
         # stacked discriminator components
         self.D1 = nn.Sequential (
             nn.Conv3d(in_channels, base_width, 1), 
-            ResNetBottleneck('3d', base_width, base_width*2, 2),
+            ResNetBlock(base_width, base_width*2, 2)
         )
         self.D2 = nn.Sequential (
-            ResNetBottleneck('3d', base_width*2, base_width*4, 2),
-            ResNetBottleneck('3d', base_width*4, base_width*4, (1,2,2)),
+            ResNetBlock(base_width*2, base_width*4, 2),
+            ResNetBlock(base_width*4, base_width*4, (1,2,2))
         )
         self.D3 = nn.Sequential (
-            ResNetBottleneck('3d', base_width*4, base_width*4, 2),
-            ResNetBottleneck('3d', base_width*4, base_width*8, 2),
+            ResNetBlock(base_width*4, base_width*4, 2),
+            ResNetBlock(base_width*4, base_width*8, 2)
         )
 
         # 1x1 convolutions to obtain desired shapes
         self.conv_shaper1 = nn.Conv3d(base_width*2, 8, 1)
         self.conv_shaper2 = nn.Conv3d(base_width*4, 16, 1)
         self.conv_shaper3 = nn.Conv3d(base_width*8, 32, 1) 
-
+        
+        # post processing of D-outs convolved with filters 
         self.processor1 = nn.Sequential (
             nn.Conv3d(8, 8, 3, 2, 1),
             nn.LeakyReLU(.2, True),
@@ -170,6 +252,7 @@ class VideoDiscriminator(nn.Module):
             nn.LeakyReLU(.2, True)
         )
 
+        # mix incoming neurons
         self.dense_shaper21 = nn.Linear(8*4*4, 128)
         self.dense_shaper22 = nn.Linear(16*2*2*2, 128)
         self.dense_shaper23 = nn.Linear(32*2*2, 128)
@@ -178,16 +261,13 @@ class VideoDiscriminator(nn.Module):
 
     def forward(self, input, condition):
         interim = self.mixer @ condition
-        # << interim.shape: 
         # << batch_size x 3 x cond_shape[1]
 
         filter1 = self.dense_shaper11(self.leaky(interim[:, 0]))
         filter2 = self.dense_shaper12(self.leaky(interim[:, 1]))
         filter3 = self.dense_shaper13(self.leaky(interim[:, 2]))
-        # << filter.shape: 
-        # << batch_size x dense_shaper.out_features
+        # << filter.shape:  batch_size x dense_shaper.out_features
 
-        # pass through the stacked discriminator
         out1 = self.D1(input)
         out2 = self.D2(out1)
         out3 = self.D3(out2)
@@ -231,7 +311,7 @@ class VideoGenerator(nn.Module):
 
         self.mixer = nn.Parameter(
                 torch.Tensor(self.vlen, cond_shape[0]))
-        nn.init.kaiming_uniform_(self.mixer, a=np.sqrt(5))
+        nn.init.kaiming_uniform_(self.mixer, a=(5**.5))
 
         self.gru = nn.GRU(
                 self.code_size, self.code_size, batch_first=True)

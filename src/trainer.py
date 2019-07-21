@@ -1,18 +1,13 @@
 import time
-
-import numpy as np
-
 import torch
-import torch.optim as optim
-
-from torch import nn
-from torch.autograd import grad as getGrads
 
 from pathlib import Path
+
+from torch import autograd, optim
 from torch.utils.tensorboard import SummaryWriter
 
 def to_video(tensor):
-    generated = (torch.clamp(tensor, -1, 1) + 1) / 2 * 255
+    generated = (torch.clamp(tensor,-1,1) + 1) / 2 * 255
     generated = generated.data
                          .cpu()
                          .numpy()
@@ -23,16 +18,17 @@ def to_video(tensor):
 
 
 class Trainer:
-    def __init__(self, video_loader, batch_size,
-                 log_interval, num_batches, log_folder) 
-        self.num_batches  = num_batches
-        self.video_loader = video_loader
+    def __init__(
+        self, video_loader, log_folder, log_interval, training_time) 
+
+        self.vloader = video_loader
         self.log_interval = log_interval
-        self.batch_size = self.batch_size
+        self.num_batches = training_time 
         self.log_folder = Path(log_folder)
+        self.batch_size = self.vloader.batch_size
 
     def zeroCentredGradPenalty(self, output, input):
-        jacobian = torch.autograd.grad (
+        jacobian = autograd.grad (
                     outputs=output,
                     inputs=input,
                     grad_outputs=torch.ones_like(output),
@@ -82,8 +78,8 @@ class Trainer:
                 'generator': 0}
 
         while True:
-            # form training pairs 
-            labels, videos = next(self.video_loader).values()
+            # >>> form training pairs >>>
+            labels, videos = next(self.vloader).values()
             images = self.composeBatchOfImages(videos)
 
             (at_video, at_image), A = text_encoder(labels)
@@ -106,8 +102,8 @@ class Trainer:
             gen_pairs['video'] = (conditions[1], fake_videos)
             gen_pairs['image'] = (conditions[0], fake_images)
             samples = {'video': videos, 'image': images}
+            # <<< form training pairs <<<
 
-            # clear accumulated grad-s
             optimizer1.zero_grad()
             optimizer2.zero_grad()
             optimizer3.zero_grad()
@@ -118,7 +114,7 @@ class Trainer:
                 neg_scores = dis_dict[kind](*neg_pairs[kind])
                 gen_scores = dis_dict[kind](*gen_pairs[kind])
 
-                # compute base loss temrs
+                # base loss temrs (enc., gen., disc.)
                 L1 = torch.log(pos_scores).mean()
                 L2 = .5 * torch.log1p(-neg_scores).mean()
                 L3 = .5 * torch.log1p(-gen_scores).mean()
@@ -129,13 +125,13 @@ class Trainer:
                 logs['generator'] += L3.item()
                 logs['encoder'] += (L1 + 2 * L2).item()
 
-                # calculate grad. penalty loss and log it
+                # grad. penalty loss (disc.)
                 gp_loss = self.zeroCentredGradPenalty(
                                 pos_scores, samples[kind])
                 gp_loss.backward()
                 logs[f'{kind} dis'] += gp_loss.item()
 
-            # calculate sameness penalty and log it
+            # sameness penalty (enc.)
             AAt = torch.einsum('ikp,ikq->ipq', A, A)
             sp_loss = torch.norm (
                         AAt - torch.eye(AAt.size(1)), 
@@ -144,14 +140,14 @@ class Trainer:
             sp_loss.backward()
             logs['encoder'] += sp_loss.item()
 
-            # do gradient descent steps
             optimizer1.step()
             optimizer2.step()
             optimizer3.step()
             optimizer4.step()
             batch_No += 1
 
-            # write log info and save generator every several epochs
+            # write log info with tensorboardX; 
+            # save generator every several epochs (perhaps unnecessary)
             if batch_No % self.log_interval == 0:
                 print(f"Batch {batch_No}")
                 for k, v in logs.items():
@@ -176,8 +172,6 @@ class Trainer:
                         self.log_folder / 'gen_%05d.pytorch' % batch_No
                     )
 
-            # save generator and exit when the number of specified batches
-            # is exceeded
             if batch_No >= self.num_batches:
                 torch.save (
                         generator.state_dict(), 
