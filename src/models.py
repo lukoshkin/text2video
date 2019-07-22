@@ -73,7 +73,8 @@ class TextEncoder(nn.Module):
 
         H = self.cnn(E.permute(0, 2, 1))
         C = H[:, :self.sp] * torch.sigmoid(H[:, self.sp:])
-        # << batch_size x ceil(ceil(sen_len / 2) / 2) x (hyppar[2]*2)
+        # << batch_size x (hyppar[2]*2) x ceil(ceil(sen_len / 2) / 2) 
+        C = C.permute(0, 2, 1)
 
         return (M, C), A
 
@@ -178,6 +179,7 @@ class ImageDiscriminator(nn.Module):
         self.dense_shaper3 = nn.Linear(256*4, 128)
         
         self.leaky = nn.LeakyReLU(.2, True)
+        self.dense_pooler = nn.Linear(3*128, 1)
 
     def forward(self, input, condition):
         interim = self.mixer @ condition
@@ -199,7 +201,9 @@ class ImageDiscriminator(nn.Module):
         out1 = filters[:, 0] * out1
         out2 = filters[:, 0] * out2
 
-        return torch.cat((out1,out2,out3), 1)
+        out = self.dense_pooler(torch.cat((out1,out2,out3), 1))
+
+        return torch.sigmoid(out)
 
 
 
@@ -258,6 +262,7 @@ class VideoDiscriminator(nn.Module):
         self.dense_shaper23 = nn.Linear(32*2*2, 128)
         
         self.leaky = nn.LeakyReLU(.2, True)
+        self.dense_pooler = nn.Linear(3*128, 1)
 
     def forward(self, input, condition):
         interim = self.mixer @ condition
@@ -291,15 +296,26 @@ class VideoDiscriminator(nn.Module):
         out1 = torch.flatten(self.processor1(out1), 1)
         out2 = torch.flatten(self.processor2(out2), 1)
 
-        out1 = self.dense_shaper21(out1)
-        out2 = self.dense_shaper22(out2)
-        out3 = self.dense_shaper23(out3)
+        out1 = self.leaky(self.dense_shaper21(out1))
+        out2 = self.leaky(self.dense_shaper22(out2))
+        out3 = self.leaky(self.dense_shaper23(out3))
 
-        return torch.cat((out1,out2,out3), 1)
+        out = self.dense_pooler(torch.cat((out1,out2,out3), 1))
+
+        return torch.sigmoid(out)
 
 
 
 class VideoGenerator(nn.Module):
+    """
+    Args:
+        dim_Z           noise dimensionality
+        cond_shape      2-tuple:  (r, u)
+                        r = r_i + r_v - total number of 
+                        text features (both of image-
+                        and video- levels)
+                        u - emb. size thereof 
+    """
     def __init__(
             self, dim_Z, cond_shape, 
             n_colors=3, base_width=32, video_length=16):
@@ -347,8 +363,7 @@ class VideoGenerator(nn.Module):
         code = self.mixer.new(
             len(text_features), vlen+1, self.code_size).normal_()
 
-        condition = torch.einsum(
-                'ink,mn->imk', text_features, self.mixer)
+        condition = self.mixer @ torch.cat(text_features, 1)
 
         code[:, 1:, self.dim_Z:] = condition
 

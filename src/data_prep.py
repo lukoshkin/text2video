@@ -7,7 +7,7 @@ from tqdm import tqdm
 from pathlib import Path
 from smart_open import open
 from torch.utils.data import Dataset
-from text_processing import doTextPart
+from text_processing import doTextPart, sen2vec
 
 class LabeledVideoDataset(Dataset):
     def __init__(self, 
@@ -17,7 +17,6 @@ class LabeledVideoDataset(Dataset):
                  step=2, transform=None, ext='webm'):
         self.transform = transform if transform \
                                  else lambda x: x
-
         path = Path(path)
         file_name = path.stem.split('.')[0]
 
@@ -65,18 +64,16 @@ class LabeledVideoDataset(Dataset):
 
                 if CNT == D * mult[-1]:
                     frames = np.array(frames, 'uint8')
-
-                    numerated = np.zeros(max_len, 'float32')
-                    filling = [t2i[w] for w in sample['label']]
-                    numerated[:len(filling)] = filling
-                    
-                    self.data.append (
-                        (numerated, frames[::step * mult[-1]])
-                    )
+                    numerated = sen2vec(
+                            sample['label'], t2i, max_len)
+                    self.data.append(
+                            (numerated, frames[::step * mult[-1]]))
                 else:
                     corrupted += 1
                     mult.pop()
 
+            # save maximum sen. length to use it further (in 'main.py')
+            self.max_sen_len = max_len
             print('No of corrupted videos', corrupted)
             print(f'Caching database to {file_name}.db')
             with open(cache / f'{file_name}.db', 'wb') as fp:

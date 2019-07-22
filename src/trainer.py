@@ -8,9 +8,9 @@ from torch.utils.tensorboard import SummaryWriter
 
 def to_video(tensor):
     generated = (torch.clamp(tensor,-1,1) + 1) / 2 * 255
-    generated = generated.data
-                         .cpu()
-                         .numpy()
+    generated = generated.data \
+                         .cpu() \
+                         .numpy() \
                          .transpose(0, 2, 1, 3, 4)
 
     return generated.astype('uint8')
@@ -19,13 +19,14 @@ def to_video(tensor):
 
 class Trainer:
     def __init__(
-        self, video_loader, log_folder, log_interval, training_time) 
+        self, video_loader, log_folder, log_interval, training_time):
 
         self.vloader = video_loader
         self.log_interval = log_interval
         self.num_batches = training_time 
         self.log_folder = Path(log_folder)
         self.batch_size = self.vloader.batch_size
+        self.hyppar = 1.
 
     def zeroCentredGradPenalty(self, output, input):
         jacobian = autograd.grad (
@@ -36,7 +37,7 @@ class Trainer:
                 )[0]
         jacobian = jacobian.view(jacobian.size(0), -1)
 
-        return self.lambda * ((jacobian.norm(dim=1) - 1) ** 2).mean()
+        return self.hyppar * ((jacobian.norm(dim=1) - 1) ** 2).mean()
 
     def composeBatchOfImages(self, videos):
         images = videos [
@@ -80,6 +81,7 @@ class Trainer:
         while True:
             # >>> form training pairs >>>
             labels, videos = next(self.vloader).values()
+            labels, videos = labels.to('cuda:1'), videos.to('cuda:1')
             images = self.composeBatchOfImages(videos)
 
             (at_video, at_image), A = text_encoder(labels)
@@ -93,7 +95,7 @@ class Trainer:
             neg_pairs['image'][0].register_hook(lambda grad: grad * 2)
 
             conditions  = (at_video.detach(), at_image.detach())
-            fake_videos = generator(self.batch_size, conditions)
+            fake_videos = generator(conditions)
             fake_images = self.composeBatchOfImages(fake_videos)
 
             fake_videos.register_hook(lambda grad: -grad)
@@ -133,10 +135,11 @@ class Trainer:
 
             # sameness penalty (enc.)
             AAt = torch.einsum('ikp,ikq->ipq', A, A)
-            sp_loss = torch.norm (
-                        AAt - torch.eye(AAt.size(1)), 
-                        dim=(1, 2)
-                    ) ** 2
+            mask = torch.eye(AAt.size(1)).byte()
+            sp_loss = torch.mean(
+                        torch.norm(
+                            AAt.masked_fill(mask, 0),
+                            dim=(1, 2)) ** 2)
             sp_loss.backward()
             logs['encoder'] += sp_loss.item()
 
@@ -151,12 +154,12 @@ class Trainer:
             if batch_No % self.log_interval == 0:
                 print(f"Batch {batch_No}")
                 for k, v in logs.items():
-                    print("\t%s:\t%5.3f" % (k, v / self.log_interval)
+                    print("\t%s:\t%5.3f" % (k, v / self.log_interval))
 
                 time_per_epoch += time.time()
                 print("Completed in %.f" % time_per_epoch)
 
-                logs = {k, v / self.log_interval for k, v in logs.items()}
+                logs = {k: v / self.log_interval for k, v in logs.items()}
                 writer.add_scalars('Losses', logs, batch_No)
 
                 logs = dict.fromkeys(logs, 0)
@@ -164,17 +167,15 @@ class Trainer:
 
                 generator.eval()
 
-                videos = generator.sample_videos(self.video_batch_size)
+                videos = generator(conditions)
                 writer.add_video("Videos", to_video(videos), batch_No)
 
-                torch.save (
+                torch.save(
                         generator.state_dict(), 
-                        self.log_folder / 'gen_%05d.pytorch' % batch_No
-                    )
+                        self.log_folder / 'gen_%05d.pytorch' % batch_No)
 
             if batch_No >= self.num_batches:
-                torch.save (
+                torch.save(
                         generator.state_dict(), 
-                        self.log_folder / 'gen_%05d.pytorch' % batch_No
-                    )
+                        self.log_folder / 'gen_%05d.pytorch' % batch_No)
                 break

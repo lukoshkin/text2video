@@ -111,3 +111,17 @@ def getGloveEmbeddings(folder, cache, t2i, emb_size=50):
     np.save(cache / 'emb_matrix', emb_matrix)
 
     return emb_matrix 
+
+def sen2vec(sen, t2i, max_len):
+    """
+    Converts a sentence to a sequence of positive
+    integers of length 'max_len' (according to 't2i'
+    dictionary), padded with zeros where necessary
+
+    Output type: float32
+    """
+    numerated = np.zeros(max_len, 'float32')
+    filling = [t2i[w] for w in sen]
+    numerated[:len(filling)] = filling
+
+    return numerated
