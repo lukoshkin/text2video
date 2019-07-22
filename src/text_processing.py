@@ -11,9 +11,29 @@ from collections import Counter
 from nltk import wordpunct_tokenize
 from spellchecker import SpellChecker
 
+def selectTemplates(path, templates, new_name):
+    """
+    Remove from the database (json file specified by 'path' argument)
+    label categories which are not in 'templates' list. The new file
+    is created under the same folder as the old one.
+    """
+    path = Path(path)
+    df = pd.read_json(path)
+
+    mask = df.template.isin(templates)
+    new_df = df[mask]
+
+    new_df.index = np.arange(mask.sum())
+    new_path = path.parent / new_name
+    new_df.to_pickle(new_path)
+
+    return new_path
+
 def doTextPart(path, cache, min_freq=2, check_spell=False):
-    path= Path(path)
-    file_name = path.stem.split('.')[0]
+    path = Path(path)
+    # in general, file name can contain several periods
+    file_name, *remainder = path.stem.split('.')
+    ext = remainder[-1]
 
     cache = Path(cache)
     if ((cache / 'vocab.pkl').exists() and 
@@ -27,10 +47,14 @@ def doTextPart(path, cache, min_freq=2, check_spell=False):
 
     cache.mkdir(parents=True, exist_ok=True)
 
-    df = pd.read_json(path)
-    sentences = df.label.apply(wordpunct_tokenize) \
-                        .values
-    sentences = list(sentences)
+    if ext == 'json':
+        df = pd.read_json(path)
+    elif ext == 'pkl':
+        df = pd.read_pickle(path)
+    else:
+        raise TypeError("'json' and 'pkl' are only supported")
+
+    sentences = list(df.label.apply(wordpunct_tokenize).values)
     token_counts = Counter()
     token_counts.update(np.concatenate(sentences))
 

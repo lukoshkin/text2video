@@ -36,11 +36,11 @@ class LabeledVideoDataset(Dataset):
             mult = []
             corrupted = 0
             D, H, W, C = video_shape
-            folder = path.parents[0]
+            folder = path.parents[1]
 
             pbar = tqdm(df.iterrows(), "Preparing dataset", len(df))
             for _, sample in pbar:
-                video = folder / f"{sample['id']}.{ext}"
+                video = folder / 'video' / f"{sample['id']}.{ext}"
                 ViCap = cv2.VideoCapture(str(video))
                 _D = ViCap.get(cv2.CAP_PROP_FRAME_COUNT)
 

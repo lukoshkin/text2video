@@ -170,10 +170,6 @@ class Trainer:
                 videos = generator(conditions)
                 writer.add_video("Videos", to_video(videos), batch_No)
 
-                torch.save(
-                        generator.state_dict(), 
-                        self.log_folder / 'gen_%05d.pytorch' % batch_No)
-
             if batch_No >= self.num_batches:
                 torch.save(
                         generator.state_dict(), 
