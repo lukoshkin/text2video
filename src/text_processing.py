@@ -31,9 +31,8 @@ def selectTemplates(path, templates, new_name):
 
 def doTextPart(path, cache, min_freq=2, check_spell=False):
     path = Path(path)
-    # in general, file name can contain several periods
-    file_name, *remainder = path.stem.split('.')
-    ext = remainder[-1]
+    file_name = path.stem 
+    ext = path.suffix[1:]
 
     cache = Path(cache)
     if ((cache / 'vocab.pkl').exists() and 
@@ -142,9 +141,9 @@ def sen2vec(sen, t2i, max_len):
     integers of length 'max_len' (according to 't2i'
     dictionary), padded with zeros where necessary
 
-    Output type: float32
+    Output type: uint8
     """
-    numerated = np.zeros(max_len, 'float32')
+    numerated = np.zeros(max_len, 'uint8')
     filling = [t2i[w] for w in sen]
     numerated[:len(filling)] = filling
 

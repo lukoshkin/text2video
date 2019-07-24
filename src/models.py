@@ -53,10 +53,10 @@ class TextEncoder(nn.Module):
         self.cnn = nn.Sequential (
             nn.Conv1d(emb_size, hyppar[2]*2, 5, 1, 2),
             nn.LeakyReLU(.2, True),
-            nn.MaxPool1d(2),
+            nn.MaxPool1d(2),  
             nn.Conv1d(hyppar[2]*2, hyppar[2]*4, 3, 1, 1),
             nn.LeakyReLU(.2, True),
-            nn.MaxPool1d(2),
+            nn.MaxPool1d(2),  
             nn.Conv1d(hyppar[2]*4, hyppar[2]*4, 3, 1, 1)
         )
 
@@ -73,7 +73,7 @@ class TextEncoder(nn.Module):
 
         H = self.cnn(E.permute(0, 2, 1))
         C = H[:, :self.sp] * torch.sigmoid(H[:, self.sp:])
-        # << batch_size x (hyppar[2]*2) x ceil(ceil(sen_len / 2) / 2) 
+        # << batch_size x (hyppar[2]*2) x ceil(ceil(sen_len/2) / 2) 
         C = C.permute(0, 2, 1)
 
         return (M, C), A
@@ -132,13 +132,14 @@ class ResNetBottleneck(nn.Module):
             BatchNorm(out_channels),
             nn.LeakyReLU(.2, True),
         )
+        self.leaky = nn.LeakyReLU(.2, True)
 
     def forward(self, x):
         y = self.main(x)
         if self.proj is not None:
             x = self.proj(x)
             
-        return y + x
+        return self.leaky(y + x)
 
 
 class ImageDiscriminator(nn.Module):
@@ -191,15 +192,16 @@ class ImageDiscriminator(nn.Module):
         out2 = self.D2(out1)
         out3 = self.D3(out2)
         
-        out1 = self.conv_shaper1(out1)
-        out2 = self.conv_shaper2(out2)
+        out1 = self.leaky(self.conv_shaper1(out1))
+        out2 = self.leaky(self.conv_shaper2(out2))
 
         out1 = self.dense_shaper1(out1.view(-1,1024)) 
         out2 = self.dense_shaper2(out2.view(-1,1024)) 
         out3 = self.dense_shaper3(out3.view(-1,1024))
         
+        # ??? add non-linearity here
         out1 = filters[:, 0] * out1
-        out2 = filters[:, 0] * out2
+        out2 = filters[:, 1] * out2
 
         out = self.dense_pooler(torch.cat((out1,out2,out3), 1))
 
@@ -265,12 +267,12 @@ class VideoDiscriminator(nn.Module):
         self.dense_pooler = nn.Linear(3*128, 1)
 
     def forward(self, input, condition):
-        interim = self.mixer @ condition
+        interim = self.leaky(self.mixer @ condition)
         # << batch_size x 3 x cond_shape[1]
 
-        filter1 = self.dense_shaper11(self.leaky(interim[:, 0]))
-        filter2 = self.dense_shaper12(self.leaky(interim[:, 1]))
-        filter3 = self.dense_shaper13(self.leaky(interim[:, 2]))
+        filter1 = self.dense_shaper11(interim[:, 0])
+        filter2 = self.dense_shaper12(interim[:, 1])
+        filter3 = self.dense_shaper13(interim[:, 2])
         # << filter.shape:  batch_size x dense_shaper.out_features
 
         out1 = self.D1(input)
@@ -280,6 +282,7 @@ class VideoDiscriminator(nn.Module):
         # >> batch size
         N = input.size(0)
 
+        # ??? add non-linearity here
         out1 = torch.conv3d(
                 self.conv_shaper1(out1).view(1,-1,8,32,32),
                 filter1.view(-1,8,3,5,5), stride=2, 
@@ -363,8 +366,7 @@ class VideoGenerator(nn.Module):
         code = self.mixer.new(
             len(text_features), vlen+1, self.code_size).normal_()
 
-        condition = self.mixer @ torch.cat(text_features, 1)
-
+        condition = self.mixer @ text_features
         code[:, 1:, self.dim_Z:] = condition
 
         H = self.gru(code[:, 1:], code[None, :, 0])[0] \

@@ -1,7 +1,7 @@
 import pickle
 
 import cv2
-import numpy as np
+import torch
 
 from tqdm import tqdm
 from pathlib import Path
@@ -10,15 +10,17 @@ from torch.utils.data import Dataset
 from text_processing import doTextPart, sen2vec
 
 class LabeledVideoDataset(Dataset):
-    def __init__(self, 
-                 path, cache, 
-                 video_shape=(32, 64, 64, 3), 
-                 min_word_freq = 2, check_spell=False,
-                 step=2, transform=None, ext='webm'):
-        self.transform = transform if transform \
-                                 else lambda x: x
+    def __init__(
+            self, path, cache, 
+            video_shape=(32, 64, 64, 3), step=2, 
+            min_word_freq = 2, check_spell=False, 
+            device=None, transform=None, ext='webm'):
+
+        device = device if device else torch.device('cpu')
+        self.transform = transform if transform else lambda x: x
+
         path = Path(path)
-        file_name = path.stem.split('.')[0]
+        file_name = path.stem
 
         cache = Path(cache)
         if (cache / f"{file_name}.db").exists():
@@ -56,6 +58,7 @@ class LabeledVideoDataset(Dataset):
                         image = cv2.resize(
                                 image, (H, W), 
                                 interpolation=cv2.INTER_AREA)
+                        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
                         frames += [image]
                         CNT += 1
 
@@ -63,17 +66,19 @@ class LabeledVideoDataset(Dataset):
                 cv2.destroyAllWindows()
 
                 if CNT == D * mult[-1]:
-                    frames = np.array(frames, 'uint8')
-                    numerated = sen2vec(
-                            sample['label'], t2i, max_len)
+                    frames = torch.tensor(
+                            frames, dtype=torch.float, device=device)
+                    frames = (frames / 255).permute(3,0,1,2)
+                    numerated = sen2vec(sample['label'], t2i, max_len)
+                    numerated = torch.tensor(
+                            numerated, dtype=torch.long, device=device)
                     self.data.append(
-                            (numerated, frames[::step * mult[-1]]))
+                            (numerated, frames[:, ::step * mult[-1]]))
                 else:
                     corrupted += 1
                     mult.pop()
 
             # save maximum sen. length to use it further (in 'main.py')
-            self.max_sen_len = max_len
             print('No of corrupted videos', corrupted)
             print(f'Caching database to {file_name}.db')
             with open(cache / f'{file_name}.db', 'wb') as fp:

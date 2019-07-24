@@ -4,7 +4,7 @@ Usage:
 
 Options:
     --device=<count>            if specified, stands for gpu node number
-    --batch-size=<count>        number of samples in all types of batches [default: 8]
+    --batch-size=<count>        number of samples in all types of batches [default: 3]
 
     --noise                     when specified, Gaussian noise is added to both discriminators
     --sigma=<float>             if there is a noise, controls its standard deviation [default: .1]
@@ -13,8 +13,9 @@ Options:
     --print-period=<count>      print log info every few iterations [default: 10]
     --training-time=<count>     number of training batches [default: 100000]
 """
-import docopt
 import sys
+import docopt
+import pickle
 from math import ceil
 
 import torch
@@ -23,7 +24,7 @@ from torch.utils.data import DataLoader
 import models
 from trainer import Trainer
 from data_prep import LabeledVideoDataset
-from text_processing import getGloveEmbeddings, selectTemplates 
+from text_processing import getGloveEmbeddings, selectTemplates, sen2vec
 
 
 
@@ -35,27 +36,42 @@ if __name__ == "__main__":
     args = docopt.docopt(__doc__)
     print(args)
 
-    sys.exit()
+    cache = '../data_logs'
+    device = torch.device(
+        f"cuda:{args['--device']}" if args['--device'] else 'cpu')
+    print(device)
 
     templates = ['Pushing [something] from left to right']
+    text_example = 'pushing book from left to right'.split()
+
     new_path = selectTemplates(
             args['<metadata>'], templates, '1-template.pkl')
 
     vlen = int(args['--video-length'])
     video_dataset = LabeledVideoDataset(
-            new_path, '../data_logs', 
-            (vlen, 64, 64, 3), check_spell=True, 
-            transform=to_tensor)
+            new_path, cache, (vlen, 64, 64, 3),
+            check_spell=True, device=device)
     video_loader = DataLoader(
             video_dataset, batch_size=int(args['--batch-size']), 
             shuffle=True, drop_last=True, num_workers=2)
 
-    emb_weights = getGloveEmbeddings('../embeddings', '../data_logs')
-    text_encoder = models.TextEncoder(n_spots, emb_weights)
+    with open(cache + '/vocab.pkl', 'rb') as fp:
+        t2i = pickle.load(fp)
+        max_sen_len = int(fp.readline())
+
+    coded_example = sen2vec(text_example, t2i, max_sen_len)
+    coded_example = torch.tensor(
+            coded_example, dtype=torch.long, device=device)
 
     r_v = 8  # n_spots 
-    r_i = ceil(ceil(video_loader.max_sen_len/2) / 2)
-    generator = models.VideoGenerator(dim_Z, (r_i+r_v, 128))
+    r_i = ceil(.5 * ceil(.5*max_sen_len))
+    print(r_i, r_v)
+
+    emb_weights = getGloveEmbeddings('../embeddings', cache, t2i) 
+    emb_weights = torch.tensor(emb_weights, device=device)
+    text_encoder = models.TextEncoder(r_v, emb_weights)
+
+    generator = models.VideoGenerator(50, (r_i+r_v, 128))
 
     image_discriminator = models.ImageDiscriminator(
             cond_shape=(r_i, 128), noise=args['--noise'], 
@@ -64,12 +80,10 @@ if __name__ == "__main__":
             cond_shape=(r_v, 128), noise=args['--noise'],
             sigma=float(args['--sigma']))
 
-    if args['--device']:
-        device = torch.device(f"cuda:{args['--device']}")
-        generator.to(device)
-        text_encoder.to(device)
-        image_discriminator.to(device)
-        video_discriminator.to(device)
+    generator.to(device)
+    text_encoder.to(device)
+    image_discriminator.to(device)
+    video_discriminator.to(device)
 
     dis_dict = {'image': image_discriminator,
                 'video': video_discriminator}
@@ -78,6 +92,7 @@ if __name__ == "__main__":
             video_loader,
             args['<log_folder>'],
             int(args['--print-period']),
-            int(args['--training-time'])
+            int(args['--training-time']),
+            coded_example
     )
     trainer.train(generator, dis_dict, text_encoder)
