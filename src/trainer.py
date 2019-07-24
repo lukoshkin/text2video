@@ -28,19 +28,20 @@ class Trainer:
         self.log_folder = Path(log_folder)
         self.batch_size = self.vloader.batch_size
         self.val_example = val_example
-        self.hyppar = 1.
+        self.hyppar = (2., 1.)
 
     def zeroCentredGradPenalty(self, output, inputs):
-        jacobian = autograd.grad (
-                    outputs=output,
-                    inputs=inputs,
-                    grad_outputs=torch.ones_like(output),
-                    create_graph=True,
-                    allow_unused=True
-                )[0]
-        jacobian = jacobian.view(jacobian.size(0), -1)
+        jacobians = autograd.grad(
+                outputs=output, inputs=inputs, 
+                grad_outputs=torch.ones_like(output), 
+                create_graph=True
+        )
+        jacobian = torch.flatten(jacobians[0], 1)
+        res = self.hyppar[0] * ((jacobian.norm(dim=1) - 1) ** 2).mean()
+        jacobian = torch.flatten(jacobians[1], 1)
+        res += self.hyppar[1] * ((jacobian.norm(dim=1) - 1) ** 2).mean()
 
-        return self.hyppar * ((jacobian.norm(dim=1) - 1) ** 2).mean()
+        return res 
 
     def composeBatchOfImages(self, videos):
         images = videos [
@@ -115,7 +116,6 @@ class Trainer:
             optimizer4.zero_grad()
 
             for kind in ['image', 'video']:
-                #pos_pairs[kind][0].requires_grad_(True)
                 pos_scores = dis_dict[kind](*pos_pairs[kind])
                 neg_scores = dis_dict[kind](*neg_pairs[kind])
                 gen_scores = dis_dict[kind](*gen_pairs[kind])
@@ -126,7 +126,7 @@ class Trainer:
                 L3 = .5 * torch.log1p(-gen_scores).mean()
                 # grad. penalty loss (disc.)
                 gp_loss = self.zeroCentredGradPenalty(
-                                pos_scores, samples[kind])
+                                pos_scores, pos_pairs[kind])
 
                 autograd.backward(
                         [-L1, -L2, -L3, gp_loss], retain_graph=True)
@@ -137,7 +137,8 @@ class Trainer:
 
             # sameness penalty (enc.)
             AAt = torch.einsum('ikp,ikq->ipq', A, A)
-            mask = torch.eye(AAt.size(1)).byte()
+            mask = torch.eye(
+                    AAt.size(1), dtype=torch.uint8, device=AAt.device)
             sp_loss = torch.mean(
                         torch.norm(
                             AAt.masked_fill(mask, 0),
@@ -171,6 +172,8 @@ class Trainer:
 
                 videos = generator(torch.cat(coded_example, 1))
                 writer.add_video("Videos", to_video(videos), batch_No)
+
+                generator.train()
 
             if batch_No >= self.num_batches:
                 torch.save(

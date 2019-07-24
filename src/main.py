@@ -28,10 +28,6 @@ from text_processing import getGloveEmbeddings, selectTemplates, sen2vec
 
 
 
-def to_tensor(video):
-    return video.transpose(3, 0, 1, 2) \
-                .astype('float32')
-
 if __name__ == "__main__":
     args = docopt.docopt(__doc__)
     print(args)
@@ -39,7 +35,6 @@ if __name__ == "__main__":
     cache = '../data_logs'
     device = torch.device(
         f"cuda:{args['--device']}" if args['--device'] else 'cpu')
-    print(device)
 
     templates = ['Pushing [something] from left to right']
     text_example = 'pushing book from left to right'.split()
@@ -53,7 +48,7 @@ if __name__ == "__main__":
             check_spell=True, device=device)
     video_loader = DataLoader(
             video_dataset, batch_size=int(args['--batch-size']), 
-            shuffle=True, drop_last=True, num_workers=2)
+            shuffle=True, drop_last=True)
 
     with open(cache + '/vocab.pkl', 'rb') as fp:
         t2i = pickle.load(fp)
@@ -65,7 +60,6 @@ if __name__ == "__main__":
 
     r_v = 8  # n_spots 
     r_i = ceil(.5 * ceil(.5*max_sen_len))
-    print(r_i, r_v)
 
     emb_weights = getGloveEmbeddings('../embeddings', cache, t2i) 
     emb_weights = torch.tensor(emb_weights, device=device)

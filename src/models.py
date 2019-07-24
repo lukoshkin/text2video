@@ -369,7 +369,7 @@ class VideoGenerator(nn.Module):
         condition = self.mixer @ text_features
         code[:, 1:, self.dim_Z:] = condition
 
-        H = self.gru(code[:, 1:], code[None, :, 0])[0] \
+        H = self.gru(code[:, 1:], code[None, :, 0].contiguous())[0] \
                 .permute(0, 2, 1)[..., None, None]
 
         return self.main(H)
