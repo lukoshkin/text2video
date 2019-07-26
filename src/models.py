@@ -14,7 +14,6 @@ class Noise(nn.Module):
         return x
 
 
-
 class TextEncoder(nn.Module):
     """
     Args:
@@ -52,10 +51,10 @@ class TextEncoder(nn.Module):
 
         self.cnn = nn.Sequential (
             nn.Conv1d(emb_size, hyppar[2]*2, 5, 1, 2),
-            nn.LeakyReLU(.2, True),
+            nn.LeakyReLU(.2, inplace=True),
             nn.MaxPool1d(2),  
             nn.Conv1d(hyppar[2]*2, hyppar[2]*4, 3, 1, 1),
-            nn.LeakyReLU(.2, True),
+            nn.LeakyReLU(.2, inplace=True),
             nn.MaxPool1d(2),  
             nn.Conv1d(hyppar[2]*4, hyppar[2]*4, 3, 1, 1)
         )
@@ -79,60 +78,74 @@ class TextEncoder(nn.Module):
         return (M, C), A
 
 
+def block1x1(Conv, inC, outC, noise, sigma, bn):
+    if Conv == nn.Conv3d: 
+        BatchNorm = nn.BatchNorm3d
+    elif Conv == nn.Conv2d: 
+        BatchNorm = nn.BatchNorm2d
+    else:
+        raise TypeError (
+            "__init__(): argument 'Conv' "
+            "must be 'nn.Conv2d' or 'nn.Conv3d' instance"
+        )
+    block_list = [Noise(noise, sigma)]
+    block_list += [Conv(inC, outC, 1, bias=False)]
+    if bn:
+        block_list += [BatchNorm(outC)]
+    block_list += [nn.LeakyReLU(.2, inplace=True)]
+
+    return nn.Sequential(*block_list)
+
+
+def block3x3(Conv, width, stride, noise, sigma=.1, bn=True):
+    if Conv == nn.Conv3d: 
+        BatchNorm = nn.BatchNorm3d
+    elif Conv == nn.Conv2d: 
+        BatchNorm = nn.BatchNorm2d
+    else:
+        raise TypeError (
+            "__init__(): argument 'Conv' "
+            "must be 'nn.Conv2d' or 'nn.Conv3d' instance"
+        )
+    block_list = [Noise(noise, sigma)]
+    block_list += [Conv(width, width, 3, stride, 1, bias=False)]
+    if bn:
+        block_list += [BatchNorm(width)]
+    block_list += [nn.LeakyReLU(.2, inplace=True)]
+
+    return nn.Sequential(*block_list)
+
 
 class ResNetBottleneck(nn.Module):
     """
     Args:
-        type        2d or 3d data
+        Conv        nn.Conv2d or nn.Conv3d 
         width       width of bottleneck
         stride      convolution stride (int or tuple of ints)
         noise       boolen flag: use Noise layer or do not 
         sigma       standard deviation of the gaussian noise
                     used in Noise layer
+        bn          whether to add BatchNorm layer
     """
     def __init__(
-            self, type, in_channels, out_channels,
-            stride=1, width=None, noise=False, sigma=None):
+            self, Conv, in_channels, out_channels, stride=1, 
+            width=None, noise=False, sigma=None, bn=True):
         super().__init__()
-
-        if type == '3d':
-            Convolution = nn.Conv3d
-            BatchNorm = nn.BatchNorm3d
-        elif type == '2d':
-            Convolution = nn.Conv2d
-            BatchNorm = nn.BatchNorm2d
-        else:
-            raise TypeError (
-                "__init__(): argument 'type' "
-                "must be '2d' or '3d'"
-            )
 
         self.proj = None
         if ((torch.tensor(stride) > 1).any() or 
                 in_channels != out_channels):
-            self.proj = Convolution(
-                    in_channels, out_channels, 1, stride)
+            self.proj = Conv(in_channels, out_channels, 1, stride)
             
         if not width:
             width = (in_channels + out_channels) // 4
 
         self.main = nn.Sequential (
-            Noise(noise, sigma=sigma),
-            Convolution(in_channels, width, 1, bias=False),
-            BatchNorm(width),
-            nn.LeakyReLU(.2, True),
-
-            Noise(noise, sigma=sigma),
-            Convolution(width, width, 3, stride, 1, bias=False),
-            BatchNorm(width),
-            nn.LeakyReLU(.2, True),
-
-            Noise(noise, sigma=sigma),
-            Convolution(width, out_channels, 1, bias=False),
-            BatchNorm(out_channels),
-            nn.LeakyReLU(.2, True),
+            block1x1(Conv, in_channels, width, noise, sigma, bn),
+            block3x3(Conv, width, stride, noise, sigma, bn),
+            block1x1(Conv, width, out_channels, noise, sigma, bn)
         )
-        self.leaky = nn.LeakyReLU(.2, True)
+        self.leaky = nn.LeakyReLU(.2, inplace=True)
 
     def forward(self, x):
         y = self.main(x)
@@ -155,7 +168,7 @@ class ImageDiscriminator(nn.Module):
 
         # 'partial class' of ResNetBottlneck
         ResNetBlock = lambda inC, outC, stride: ResNetBottleneck(
-                '2d', inC, outC, stride, noise=noise, sigma=sigma)
+            nn.Conv2d, inC, outC, stride, noise=noise, sigma=sigma, bn=False)
 
         # stacked discriminator components
         self.D1 = nn.Sequential (
@@ -174,12 +187,13 @@ class ImageDiscriminator(nn.Module):
         # 1x1 convolutions and fc layers to obtain desired shape
         self.conv_shaper1 = nn.Conv2d(base_width*2, 4, 1, 2)
         self.conv_shaper2 = nn.Conv2d(base_width*4, 16, 1)
+        self.conv_shaper3 = nn.Conv2d(base_width*8, 256, 1)
 
         self.dense_shaper1 = nn.Linear(4*16*16, 128)
         self.dense_shaper2 = nn.Linear(16*8*8, 128)
         self.dense_shaper3 = nn.Linear(256*4, 128)
         
-        self.leaky = nn.LeakyReLU(.2, True)
+        self.leaky = nn.LeakyReLU(.2, inplace=True)
         self.dense_pooler = nn.Linear(3*128, 1)
 
     def forward(self, input, condition):
@@ -194,6 +208,7 @@ class ImageDiscriminator(nn.Module):
         
         out1 = self.leaky(self.conv_shaper1(out1))
         out2 = self.leaky(self.conv_shaper2(out2))
+        out3 = self.leaky(self.conv_shaper3(out3))
 
         out1 = self.dense_shaper1(out1.view(-1,1024)) 
         out2 = self.dense_shaper2(out2.view(-1,1024)) 
@@ -206,7 +221,6 @@ class ImageDiscriminator(nn.Module):
         out = self.dense_pooler(torch.cat((out1,out2,out3), 1))
 
         return torch.sigmoid(out)
-
 
 
 class VideoDiscriminator(nn.Module):
@@ -225,7 +239,7 @@ class VideoDiscriminator(nn.Module):
 
         # 'partial class' of ResNetBottlneck
         ResNetBlock = lambda inC, outC, stride: ResNetBottleneck(
-                '3d', inC, outC, stride, noise=noise, sigma=sigma)
+            nn.Conv3d, inC, outC, stride, noise=noise, sigma=sigma, bn=False)
 
         # stacked discriminator components
         self.D1 = nn.Sequential (
@@ -246,16 +260,17 @@ class VideoDiscriminator(nn.Module):
         self.conv_shaper2 = nn.Conv3d(base_width*4, 16, 1)
         self.conv_shaper3 = nn.Conv3d(base_width*8, 32, 1) 
         
+        self.leaky = nn.LeakyReLU(.2, inplace=True)
         # post processing of D-outs convolved with filters 
         self.processor1 = nn.Sequential (
             nn.Conv3d(8, 8, 3, 2, 1),
-            nn.LeakyReLU(.2, True),
+            self.leaky,
             nn.Conv3d(8, 8, 3, 2, 1),
-            nn.LeakyReLU(.2, True)
+            self.leaky
         )
         self.processor2 = nn.Sequential (
             nn.Conv3d(16, 16, 3, 2, 1),
-            nn.LeakyReLU(.2, True)
+            self.leaky
         )
 
         # mix incoming neurons
@@ -263,7 +278,6 @@ class VideoDiscriminator(nn.Module):
         self.dense_shaper22 = nn.Linear(16*2*2*2, 128)
         self.dense_shaper23 = nn.Linear(32*2*2, 128)
         
-        self.leaky = nn.LeakyReLU(.2, True)
         self.dense_pooler = nn.Linear(3*128, 1)
 
     def forward(self, input, condition):
@@ -308,7 +322,6 @@ class VideoDiscriminator(nn.Module):
         return torch.sigmoid(out)
 
 
-
 class VideoGenerator(nn.Module):
     """
     Args:
@@ -321,7 +334,7 @@ class VideoGenerator(nn.Module):
     """
     def __init__(
             self, dim_Z, cond_shape, 
-            n_colors=3, base_width=32, video_length=16):
+            n_colors=3, base_width=128, video_length=16):
         super().__init__()
         self.dim_Z = dim_Z
         self.n_colors = n_colors
@@ -335,23 +348,29 @@ class VideoGenerator(nn.Module):
         self.gru = nn.GRU(
                 self.code_size, self.code_size, batch_first=True)
 
+        # 'partial class' of ResNetBottlneck
+        ResNetBlock = lambda inC, outC, stride: ResNetBottleneck(
+                nn.Conv3d, inC, outC, stride)
+
         self.main = nn.Sequential (
-            ResNetBottleneck('3d', self.code_size, base_width*8),
+            ResNetBlock(self.code_size, base_width*8, 1),
+
+            ResNetBlock(base_width*8, base_width*8, 1),
             nn.Upsample(scale_factor=2, mode='trilinear'),
 
-            ResNetBottleneck('3d', base_width*8, base_width*4, (2,1,1)),
+            ResNetBlock(base_width*8, base_width*4, (2,1,1)),
             nn.Upsample(scale_factor=2, mode='trilinear'),
 
-            ResNetBottleneck('3d', base_width*4, base_width*4, (2,1,1)),
+            ResNetBlock(base_width*4, base_width*4, (2,1,1)),
             nn.Upsample(scale_factor=2, mode='trilinear'),
 
-            ResNetBottleneck('3d', base_width*4, base_width*2, (2,1,1)),
+            ResNetBlock(base_width*4, base_width*2, (2,1,1)),
             nn.Upsample(scale_factor=2, mode='trilinear'),
 
-            ResNetBottleneck('3d', base_width*2, base_width, (2,1,1)),
+            ResNetBlock(base_width*2, base_width, (2,1,1)),
             nn.Upsample(scale_factor=2, mode='trilinear'),
 
-            ResNetBottleneck('3d', base_width, base_width, (2,1,1)),
+            ResNetBlock(base_width, base_width, (2,1,1)),
             nn.Upsample(scale_factor=2, mode='trilinear'),
 
             nn.Conv3d(base_width, self.n_colors, 3, (2,1,1), 1),

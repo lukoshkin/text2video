@@ -11,6 +11,7 @@ from collections import Counter
 from nltk import wordpunct_tokenize
 from spellchecker import SpellChecker
 
+
 def selectTemplates(path, templates, new_name):
     """
     Remove from the database (json file specified by 'path' argument)
@@ -28,6 +29,7 @@ def selectTemplates(path, templates, new_name):
     new_df.to_pickle(new_path)
 
     return new_path
+
 
 def doTextPart(path, cache, min_freq=2, check_spell=False):
     path = Path(path)
@@ -107,6 +109,7 @@ def doTextPart(path, cache, min_freq=2, check_spell=False):
 
     return (max_len, t2i, df)
 
+
 def getGloveEmbeddings(folder, cache, t2i, emb_size=50):
     cache = Path(cache)
     file_path = cache / 'emb_matrix.npy'
@@ -135,15 +138,16 @@ def getGloveEmbeddings(folder, cache, t2i, emb_size=50):
 
     return emb_matrix 
 
+
 def sen2vec(sen, t2i, max_len):
     """
     Converts a sentence to a sequence of positive
     integers of length 'max_len' (according to 't2i'
     dictionary), padded with zeros where necessary
 
-    Output type: uint8
+    Output type: int64 - necessary for nn.Embedding
     """
-    numerated = np.zeros(max_len, 'uint8')
+    numerated = np.zeros(max_len, 'int')
     filling = [t2i[w] for w in sen]
     numerated[:len(filling)] = filling
 
