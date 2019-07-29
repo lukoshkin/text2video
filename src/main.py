@@ -17,10 +17,11 @@ Options:
 
     --video-length=<len>        original length of videos in the video batch [default: 32]
     --training-time=<count>     number of training epochs [default: 100000]
+    --log-period=<count>        frequency of submitting videos to tensorboard [default: 10]
+
 """
 import docopt
 import pickle
-from math import ceil
 from pathlib import Path
 
 import torch
@@ -69,23 +70,22 @@ if __name__ == "__main__":
         t2i = pickle.load(fp)
         max_sen_len = int(fp.readline())
 
-    r_v = 8  # n_spots 
-    r_i = ceil(.5 * ceil(.5*max_sen_len))
+    n_spots = 16  # n_spots 
 
     device = torch.device(device)
     emb_weights = getGloveEmbeddings('../embeddings', cache, t2i) 
     emb_weights = torch.tensor(emb_weights, device=device)
-    text_encoder = models.TextEncoder(r_v, emb_weights)
+    text_encoder = models.TextEncoder(n_spots, emb_weights)
 
     dim_Z = 50
-    emb_size = 128
-    generator = models.VideoGenerator(dim_Z, (r_i+r_v, emb_size))
+    emb_size = 64
+    generator = models.VideoGenerator(dim_Z, (n_spots, emb_size))
 
     image_discriminator = models.ImageDiscriminator(
-            cond_shape=(r_i, emb_size), noise=args['--noise'], 
+            cond_size=emb_size, noise=args['--noise'], 
             sigma=float(args['--sigma']))
     video_discriminator = models.VideoDiscriminator(
-            cond_shape=(r_v, emb_size), noise=args['--noise'],
+            cond_shape=(n_spots, emb_size), noise=args['--noise'],
             sigma=float(args['--sigma']))
 
     generator.to(device)
@@ -114,6 +114,7 @@ if __name__ == "__main__":
     trainer = Trainer (
             text_encoder, dis_dict, generator,
             opt_list, video_loader, val_samples,
-            cache, int(args['--training-time'])
+            cache, int(args['--log-period']),
+            int(args['--training-time'])
     )
     trainer.train()

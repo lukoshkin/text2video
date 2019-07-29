@@ -41,7 +41,7 @@ class Trainer:
     def __init__(
         self, encoder, dis_dict, generator,
         opt_list, video_loader, val_samples,
-        log_folder, num_epochs=100000):
+        log_folder, log_period=10, num_epochs=100000):
 
         self.encoder = encoder
         self.dis_dict = dis_dict
@@ -52,23 +52,21 @@ class Trainer:
         self.num_epochs = num_epochs
         self.log_folder = Path(log_folder)
         self.val_samples = val_samples
+        self.log_period = log_period
 
         self.pairs = {}
-        self.hyppar = (2., 1.)
+        self.hyppar = 1e-3
         self.logs = {'image dis': 0,
                      'video dis': 0,
                      'generator': 0,
                      'encoder': 0}
 
-    def composeBatchOfImages(self, videos):
-        bs = videos.size(0)
-        nf = videos.size(2)
-        images = videos[
-                torch.arange(bs), :,
-                torch.multinomial(
-                    torch.ones(nf), bs, replacement=True), ... ]
+    def getImageBatchIndices(self, batch_size, vlen):
+        sample_ids = torch.arange(batch_size)
+        frame_ids = torch.multinomial(
+                torch.ones(vlen), batch_size, replacement=True)
 
-        return images
+        return sample_ids, frame_ids
 
     def zeroCentredGradPenalty(self, output, inputs):
         jacobians = autograd.grad(
@@ -76,30 +74,34 @@ class Trainer:
                 grad_outputs=torch.ones_like(output), 
                 create_graph=True)
         jacobian = torch.flatten(jacobians[0], 1)
-        res = self.hyppar[0] * ((jacobian.norm(dim=1) - 1) ** 2).mean()
+        res = ((jacobian.norm(dim=1) - 1) ** 2).mean()
         jacobian = torch.flatten(jacobians[1], 1)
-        res += self.hyppar[1] * ((jacobian.norm(dim=1) - 1) ** 2).mean()
+        res += self.hyppar * ((jacobian.norm(dim=1) - 1) ** 2).mean()
 
         return res 
 
-    def formTrainingPairs(self, images, videos, at_video, at_image):
+    def formTrainingPairs(self, videos, at_video):
+        sample_ids, frame_ids = self.getImageBatchIndices(
+                videos.size(0), videos.size(2))
+        images = videos[sample_ids, :, frame_ids, ...]
+        at_image = at_video[sample_ids, frame_ids, :]
+
         self.pairs['pos','video'] = (videos, at_video)
         self.pairs['neg','video'] = (videos, torch.roll(at_video, 1, 0))
-        self.pairs['neg','video'][0].register_hook(lambda grad: grad * 2)
+        self.pairs['neg','video'][1].register_hook(lambda grad: grad * 2)
 
         self.pairs['pos','image'] = (images, at_image)
         self.pairs['neg','image'] = (images, torch.roll(at_image, -1, 0))
-        self.pairs['neg','image'][0].register_hook(lambda grad: grad * 2)
+        self.pairs['neg','image'][1].register_hook(lambda grad: grad * 2)
 
-        conditions = (at_image.detach(), at_video.detach())
-        fake_videos = self.generator(torch.cat(conditions, 1))
-        fake_images = self.composeBatchOfImages(fake_videos)
+        fake_videos = self.generator(at_video.detach())
+        fake_images = fake_videos[sample_ids, :, frame_ids, ...]
 
         fake_videos.register_hook(lambda grad: -grad)
         fake_images.register_hook(lambda grad: -grad)
         
-        self.pairs['gen','image'] = (fake_images, conditions[0])
-        self.pairs['gen','video'] = (fake_videos, conditions[1])
+        self.pairs['gen','image'] = (fake_images, at_image.detach())
+        self.pairs['gen','video'] = (fake_videos, at_video.detach())
 
     def samenessPenaltyBackward(self, A):
         AAt = torch.einsum('ikp,ikq->ipq', A, A)
@@ -129,9 +131,8 @@ class Trainer:
 
     def passBatchThroughNetwork(self, labels, videos):
         videos.requires_grad_(True)
-        images = self.composeBatchOfImages(videos)
-        conditions, A = self.encoder(labels)
-        self.formTrainingPairs(images, videos, *conditions)
+        at_video, A = self.encoder(labels)
+        self.formTrainingPairs(videos, at_video)
 
         for opt in self.opt_list:
             opt.zero_grad()
@@ -168,12 +169,13 @@ class Trainer:
             writer.add_scalars('Loss', self.logs, epoch)
             self.logs = dict.fromkeys(self.logs, 0)
 
-            self.generator.eval()
-            with torch.no_grad():
-                conditions,_ = self.encoder(texts)
-                movies = self.generator(torch.cat(conditions,1))
-            writer.add_video('Fakes', to_video(movies), epoch)
-            self.generator.train()
+            if not epoch % self.log_period:
+                self.generator.eval()
+                with torch.no_grad():
+                    at_video,_ = self.encoder(texts)
+                    movies = self.generator(at_video)
+                writer.add_video('Fakes', to_video(movies), epoch)
+                self.generator.train()
             # --------------------------
             time_per_epoch =- time.time()
 
