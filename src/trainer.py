@@ -5,6 +5,7 @@ from pathlib import Path
 
 from torch import autograd
 from torch.utils.tensorboard import SummaryWriter
+from torch.nn.utils.rnn import pack_padded_sequence
 
 
 def to_video(tensor):
@@ -41,7 +42,7 @@ class Trainer:
     def __init__(
         self, encoder, dis_dict, generator,
         opt_list, video_loader, val_samples,
-        log_folder, log_period=10, num_epochs=100000):
+        log_folder, num_epochs=100000):
 
         self.encoder = encoder
         self.dis_dict = dis_dict
@@ -50,9 +51,8 @@ class Trainer:
 
         self.vloader = video_loader
         self.num_epochs = num_epochs
-        self.log_folder = Path(log_folder)
+        self.log_folder = log_folder
         self.val_samples = val_samples
-        self.log_period = log_period
 
         self.pairs = {}
         self.hyppar = 1e-3
@@ -103,16 +103,16 @@ class Trainer:
         self.pairs['gen','image'] = (fake_images, at_image.detach())
         self.pairs['gen','video'] = (fake_videos, at_video.detach())
 
-    def samenessPenaltyBackward(self, A):
+    def samenessPenalty(self, A):
         AAt = torch.einsum('ikp,ikq->ipq', A, A)
         mask = torch.eye(
                 AAt.size(1), dtype=torch.uint8, device=AAt.device)
-        sp_loss = torch.mean(
+        res = torch.mean(
                 torch.norm(AAt.masked_fill(mask, 0), dim=(1, 2)) ** 2)
-        sp_loss.backward()
-        self.logs['encoder'] -= sp_loss.item()
+
+        return res
     
-    def baseLossTermsBackward(self, kind):
+    def calculateBaseLossTerms(self, kind):
         pos_scores = self.dis_dict[kind](*self.pairs['pos',kind])
         neg_scores = self.dis_dict[kind](*self.pairs['neg',kind])
         gen_scores = self.dis_dict[kind](*self.pairs['gen',kind])
@@ -123,22 +123,25 @@ class Trainer:
         gp_loss = self.zeroCentredGradPenalty(
                 pos_scores, self.pairs['pos',kind])
 
-        autograd.backward([-L1, -L2, -L3, gp_loss], retain_graph=True)
-
         self.logs[f'{kind} dis'] += (L1 + L2 + L3 - gp_loss).item()
         self.logs['encoder'] += (L1 + 2 * L2).item()
         self.logs['generator'] += L3.item()
 
-    def passBatchThroughNetwork(self, labels, videos):
+        return -(L1 + L2 + L3 - gp_loss)
+
+    def passBatchThroughNetwork(self, labels, videos, senlen):
         videos.requires_grad_(True)
-        at_video, A = self.encoder(labels)
+        at_video, A = self.encoder(labels, senlen)
         self.formTrainingPairs(videos, at_video)
+
+        loss = self.samenessPenalty(A)
+        self.logs['encoder'] -= loss.item()
 
         for opt in self.opt_list:
             opt.zero_grad()
         for kind in ['image', 'video']:
-            self.baseLossTermsBackward(kind)
-        self.samenessPenaltyBackward(A)
+            loss += self.calculateBaseLossTerms(kind)
+        loss.backward()
         for opt in self.opt_list:
             opt.step()
 
@@ -146,36 +149,35 @@ class Trainer:
         writer = SummaryWriter()
         device = next(self.generator.parameters()).device
 
-        texts = torch.tensor(self.val_samples.f0, device=device)
-        movies = torch.tensor(self.val_samples.f1, device=device)
+        lens = torch.tensor(self.val_samples.f0, device=device)
+        texts = torch.tensor(self.val_samples.f1, device=device)
+        movies = torch.tensor(self.val_samples.f2, device=device)
         writer.add_video("Real Clips", to_video(movies))
 
         time_per_epoch =- time.time()
         for epoch in range(self.num_epochs):
-            batch_No = 0
-            for batch in self.vloader:
+            for No, batch in enumerate(self.vloader):
                 labels = batch['label'].to(device, non_blocking=True)
                 videos = batch['video'].to(device, non_blocking=True)
-                self.passBatchThroughNetwork(labels, videos)
-                batch_No += 1
+                senlen = batch['sen_len'].to(device, non_blocking=True)
+                self.passBatchThroughNetwork(labels, videos, senlen)
 
             time_per_epoch += time.time()
             # --------------------------
             print(f'Epoch {epoch}/{self.num_epochs}')
             for k, v in self.logs.items():
-                print("\t%s:\t%5.4f" % (k, v/batch_No))
-                self.logs[k] = v / batch_No
+                print("\t%s:\t%5.4f" % (k, v/(No+1)))
+                self.logs[k] = v / (No+1)
             print('Completed in %.f s' % time_per_epoch)
             writer.add_scalars('Loss', self.logs, epoch)
             self.logs = dict.fromkeys(self.logs, 0)
 
-            if not epoch % self.log_period:
-                self.generator.eval()
-                with torch.no_grad():
-                    at_video,_ = self.encoder(texts)
-                    movies = self.generator(at_video)
-                writer.add_video('Fakes', to_video(movies), epoch)
-                self.generator.train()
+            self.generator.eval()
+            with torch.no_grad():
+                at_video,_ = self.encoder(texts, lens)
+                movies = self.generator(at_video)
+            writer.add_video('Fakes', to_video(movies), epoch)
+            self.generator.train()
             # --------------------------
             time_per_epoch =- time.time()
 

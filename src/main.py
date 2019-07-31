@@ -17,8 +17,6 @@ Options:
 
     --video-length=<len>        original length of videos in the video batch [default: 32]
     --training-time=<count>     number of training epochs [default: 100000]
-    --log-period=<count>        frequency of submitting videos to tensorboard [default: 10]
-
 """
 import docopt
 import pickle
@@ -61,7 +59,7 @@ if __name__ == "__main__":
     num_workers = int(args['--num_workers'])
     video_loader = DataLoader(
             video_dataset, batch_size, shuffle=True,
-            num_workers=num_workers, pin_memory=True, drop_last=True)
+            num_workers=num_workers, pin_memory=False, drop_last=True)
 
     val_samples = [168029]  # pushing book from left to right
     val_samples = video_dataset.getById(val_samples)
@@ -70,7 +68,7 @@ if __name__ == "__main__":
         t2i = pickle.load(fp)
         max_sen_len = int(fp.readline())
 
-    n_spots = 16  # n_spots 
+    n_spots = 16
 
     device = torch.device(device)
     emb_weights = getGloveEmbeddings('../embeddings', cache, t2i) 
@@ -114,7 +112,6 @@ if __name__ == "__main__":
     trainer = Trainer (
             text_encoder, dis_dict, generator,
             opt_list, video_loader, val_samples,
-            cache, int(args['--log-period']),
-            int(args['--training-time'])
+            cache, int(args['--training-time'])
     )
     trainer.train()

@@ -69,10 +69,11 @@ class LabeledVideoDataset(Dataset):
 
                 if CNT == D * mult[-1]:
                     frames = np.array(
-                            frames, 'float32').transpose(3,0,1,2) / 255
+                        frames, 'float32').transpose(3,0,1,2) / 255
+                    sen_len = len(sample['label'])
                     numerated = sen2vec(sample['label'], t2i, max_len)
                     self.data.append(
-                            (numerated, frames[:, ::step * mult[-1]]))
+                        (sen_len, numerated, frames[:, ::step * mult[-1]]))
                     self.i2i[sample['id']] = index
                     index += 1
                 else:
@@ -81,8 +82,9 @@ class LabeledVideoDataset(Dataset):
 
             self.data = np.array(
                     self.data,
-                    [('', 'int64', max_len),
-                        ('', 'float32', (C, D//step, H, W))])
+                    [('', 'int64'),
+                     ('', 'int64', max_len),
+                     ('', 'float32', (C, D//step, H, W))])
 
             # save maximum sen. length to use it further (in 'main.py')
             print('No of corrupted videos', corrupted)
@@ -93,10 +95,11 @@ class LabeledVideoDataset(Dataset):
             print('Done!')
 
     def __getitem__(self, index):
-        label, video = self.data[index]
+        sen_len, label, video = self.data[index]
 
-        return {'label' : label, 
-                'video' : self.transform(video)}
+        return {'sen_len': sen_len,
+                'label': label,
+                'video': self.transform(video)}
 
     def __len__(self):
         return len(self.data)

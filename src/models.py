@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.utils.data
 
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
+
 class Noise(nn.Module):
     def __init__(self, noise, sigma=0.2):
         super().__init__()
@@ -53,13 +55,17 @@ class TextEncoder(nn.Module):
         if batch_size:
             self.initial = (2, batch_size, hyppar[1])
 
-    def forward(self, text_ids):
-        H = self.embed(text_ids)
+    def forward(self, text_ids, lengths):
+        lengths, sortbylen = lengths.sort(0, descending=True)
+        H = self.embed(text_ids[sortbylen])
+        H = pack_padded_sequence(H, lengths, batch_first=True)
+
         if self.initial is not None:
             H = self.gru(H, self.initial)[0]
         else:
             H = self.gru(H)[0]
 
+        H,_ = pad_packed_sequence(H, batch_first=True)
         A = self.attention(H)
         # << output size: (-1, sen_len, n_spots)
         M = torch.einsum('ikp,ikq->ipq', A, H)
@@ -156,15 +162,15 @@ class ResNetBottleneck(nn.Module):
 class ImageDiscriminator(nn.Module):
     def __init__(
             self, in_channels=3, cond_size=64,
-            base_width=16, noise=False, sigma=None):
+            base_width=32, noise=False, sigma=None):
         super().__init__()
         
         # ResNetBottlneck 'partial class'
         ResNetBlock = lambda inC, outC, stride: ResNetBottleneck(
-            nn.Conv2d, inC, outC, stride, noise=noise, sigma=sigma)#, bn=False)
+            nn.Conv2d, inC, outC, stride, noise=noise, sigma=sigma)
 
         self.D1 = nn.Sequential (
-            ResNetBlock(in_channels, base_width, 2), 
+            nn.Conv2d(in_channels, base_width, 1, 2), 
             ResNetBlock(base_width, base_width*2, 2),
             ResNetBlock(base_width*2, base_width*4, 2),
             ResNetBlock(base_width*4, base_width*8, 2)
@@ -173,8 +179,7 @@ class ImageDiscriminator(nn.Module):
 
         cat_dim = base_width*8 + cond_size
         self.D2 = nn.Sequential (
-            nn.Conv2d(cat_dim, cat_dim, 1),
-            nn.LeakyReLU(.2, inplace=True),
+            ResNetBlock(cat_dim, cat_dim, 1),
             nn.Conv2d(cat_dim, 1, 4),
             nn.Sigmoid()
         )
@@ -193,7 +198,7 @@ class ImageDiscriminator(nn.Module):
 class VideoDiscriminator(nn.Module):
     def __init__(
             self, in_channels=3, cond_shape=(16, 64),
-            base_width=16, noise=False, sigma=None):
+            base_width=32, noise=False, sigma=None):
         super().__init__()
 
         # ResNetBottlneck 'partial class' 
@@ -201,7 +206,7 @@ class VideoDiscriminator(nn.Module):
             nn.Conv3d, inC, outC, stride, noise=noise, sigma=sigma)#, bn=False)
 
         self.D1 = nn.Sequential (
-            ResNetBlock(in_channels, base_width, 1), 
+            nn.Conv3d(in_channels, base_width, 1), 
             ResNetBlock(base_width, base_width*2, (1,2,2)),
             ResNetBlock(base_width*2, base_width*4, (1,2,2)),
         )
@@ -236,46 +241,38 @@ class VideoGenerator(nn.Module):
     """
     def __init__(
             self, dim_Z, cond_shape=(16, 64), 
-            n_colors=3, base_width=32, video_length=16):
+            n_colors=3, base_width=64, video_length=16):
         super().__init__()
         self.dim_Z = dim_Z
         self.n_colors = n_colors
         self.vlen = video_length
         self.code_size = dim_Z + cond_shape[1]
 
-        self.mixer = nn.Parameter(
-                torch.Tensor(self.vlen, cond_shape[0]))
-        nn.init.kaiming_uniform_(self.mixer, a=(5**.5))
-
         self.gru = nn.GRU(
                 self.code_size, self.code_size, batch_first=True)
 
-        # 'partial class' of ResNetBottlneck
         ResNetBlock = lambda inC, outC, stride: ResNetBottleneck(
-                nn.Conv3d, inC, outC, stride)
+                nn.Conv2d, inC, outC, stride)
 
-        self.main = nn.Sequential (
+        self.main = nn.Sequential(
+            nn.Upsample(scale_factor=2, mode='bilinear'),
             ResNetBlock(self.code_size, base_width*8, 1),
 
+            nn.Upsample(scale_factor=2, mode='bilinear'),
             ResNetBlock(base_width*8, base_width*8, 1),
-            nn.Upsample(scale_factor=2, mode='trilinear'),
 
-            ResNetBlock(base_width*8, base_width*4, (2,1,1)),
-            nn.Upsample(scale_factor=2, mode='trilinear'),
+            nn.Upsample(scale_factor=2, mode='bilinear'),
+            ResNetBlock(base_width*8, base_width*4, 1),
 
-            ResNetBlock(base_width*4, base_width*4, (2,1,1)),
-            nn.Upsample(scale_factor=2, mode='trilinear'),
+            nn.Upsample(scale_factor=2, mode='bilinear'),
+            ResNetBlock(base_width*4, base_width*2, 1),
 
-            ResNetBlock(base_width*4, base_width*2, (2,1,1)),
-            nn.Upsample(scale_factor=2, mode='trilinear'),
+            nn.Upsample(scale_factor=2, mode='bilinear'),
+            ResNetBlock(base_width*2, base_width, 1),
 
-            ResNetBlock(base_width*2, base_width, (2,1,1)),
-            nn.Upsample(scale_factor=2, mode='trilinear'),
+            nn.Upsample(scale_factor=2, mode='bilinear'),
+            nn.Conv2d(base_width, self.n_colors, 3, 1, 1),
 
-            ResNetBlock(base_width, base_width, (2,1,1)),
-            nn.Upsample(scale_factor=2, mode='trilinear'),
-
-            nn.Conv3d(base_width, self.n_colors, 3, (2,1,1), 1),
             nn.Tanh()
         )
 
@@ -283,12 +280,14 @@ class VideoGenerator(nn.Module):
         vlen = vlen if vlen else self.vlen
 
         code = condition.new(
-                len(condition), vlen, self.code_size).normal_()
+            len(condition), vlen, self.code_size).normal_()
         initial = code.new(
-                1, len(condition), self.code_size).normal_()
+            1, len(condition), self.code_size).normal_()
 
         code[..., self.dim_Z:] = condition
 
-        H = self.gru(code, initial)[0].permute(0, 2, 1)[..., None, None]
+        H,_ = self.gru(code, initial)
+        H = torch.flatten(H, 0, 1)[..., None, None]
+        out = self.main(H).view(-1, vlen, 3, 64, 64)
 
-        return self.main(H)
+        return out.permute(0, 2, 1, 3, 4)
