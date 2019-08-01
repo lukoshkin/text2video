@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.utils.data
 
-from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
+from torch.nn.utils.rnn import pack_padded_sequence, PackedSequence 
 
 class Noise(nn.Module):
     def __init__(self, noise, sigma=0.2):
@@ -24,13 +24,12 @@ class TextEncoder(nn.Module):
 
         set of the rest ('extra') tuning hyperparameters
 
-        hyppar[0]       attention part hyperparameter 
-        hyppar[1]       number of gru hidden units
-        hyppar[2]       projection dimensionality
+        hyppar[0]       number of gru hidden units
+        hyppar[1]       projection dimensionality
     """
     def __init__(
-            self, n_spots, emb_weights, 
-            batch_size=None, hyppar=(32,64,64)):
+            self, emb_weights, 
+            batch_size=None, hyppar=(64,64)):
         super().__init__()
         self.initial = None
         self.embed = nn.Embedding.from_pretrained (
@@ -39,21 +38,15 @@ class TextEncoder(nn.Module):
                         padding_idx=0 
                     )
         self.gru = nn.GRU(
-            emb_weights.size(1), hyppar[1], 
+            emb_weights.size(1), hyppar[0], 
             batch_first=True, bidirectional=True
         )
-        self.attention = nn.Sequential (
-            nn.Linear(hyppar[1]*2, hyppar[0]),
-            nn.Tanh(),
-            nn.Linear(hyppar[0], n_spots),
-            nn.Softmax(1)
-        )
         self.proj = nn.Sequential (
-            nn.Linear(hyppar[1]*2, hyppar[2]),
+            nn.Linear(hyppar[0]*2, hyppar[1]),
             nn.LeakyReLU(.2, inplace=True)
         )
         if batch_size:
-            self.initial = (2, batch_size, hyppar[1])
+            self.initial = (2, batch_size, hyppar[0])
 
     def forward(self, text_ids, lengths):
         lengths, sortbylen = lengths.sort(0, descending=True)
@@ -61,17 +54,14 @@ class TextEncoder(nn.Module):
         H = pack_padded_sequence(H, lengths, batch_first=True)
 
         if self.initial is not None:
-            H = self.gru(H, self.initial)[0]
+            H, last = self.gru(H, self.initial)
         else:
-            H = self.gru(H)[0]
+            H, last = self.gru(H)
 
-        H,_ = pad_packed_sequence(H, batch_first=True)
-        A = self.attention(H)
-        # << output size: (-1, sen_len, n_spots)
-        M = torch.einsum('ikp,ikq->ipq', A, H)
-        # << output size: (-1, n_spots, hyppar[1]*2)
+        return H, last
+        cuts = torch.cumsum(lengths-1, 0)
 
-        return self.proj(M), A
+        return self.proj(H[0][cuts, :])
 
 
 def block1x1(Conv, inC, outC, noise, sigma, bn):
