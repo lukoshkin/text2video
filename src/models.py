@@ -174,7 +174,7 @@ class ImageDiscriminator(nn.Module):
         c = c[..., None, None].expand(*c.shape, 4, 4)
         # << original c.shape: (-1, cond_size)
         #    after taking a slice: (-1, cond_size, 1, 1);
-        #    after expand: (-1, cond_size, 4, 4)
+        #    after expand op.: (-1, cond_size, 4, 4)
         x = torch.cat((x, c), 1)
 
         return self.D2(x)
@@ -225,7 +225,7 @@ class VideoGenerator(nn.Module):
     """
     def __init__(
             self, dim_Z, cond_size=64, 
-            n_colors=3, base_width=64, video_length=16):
+            n_colors=3, base_width=128, video_length=16):
         super().__init__()
         self.dim_Z = dim_Z
         self.n_colors = n_colors
@@ -236,40 +236,36 @@ class VideoGenerator(nn.Module):
                 self.code_size, self.code_size, batch_first=True)
 
         ResNetBlock = lambda inC, outC, stride: ResNetBottleneck(
-                nn.Conv2d, inC, outC, stride)
+                nn.Conv3d, inC, outC, stride)
 
         self.main = nn.Sequential(
-            nn.Upsample(scale_factor=2, mode='bilinear'),
+            nn.Upsample(scale_factor=(1,2,2)),
             ResNetBlock(self.code_size, base_width*8, 1),
 
-            nn.Upsample(scale_factor=2, mode='bilinear'),
+            nn.Upsample(scale_factor=2),
             ResNetBlock(base_width*8, base_width*8, 1),
 
-            nn.Upsample(scale_factor=2, mode='bilinear'),
+            nn.Upsample(scale_factor=2),
             ResNetBlock(base_width*8, base_width*4, 1),
 
-            nn.Upsample(scale_factor=2, mode='bilinear'),
+            nn.Upsample(scale_factor=(1,2,2)),
             ResNetBlock(base_width*4, base_width*2, 1),
 
-            nn.Upsample(scale_factor=2, mode='bilinear'),
+            nn.Upsample(scale_factor=2),
             ResNetBlock(base_width*2, base_width, 1),
 
-            nn.Upsample(scale_factor=2, mode='bilinear'),
+            nn.Upsample(scale_factor=2),
             nn.Conv2d(base_width, self.n_colors, 3, 1, 1),
 
             nn.Tanh()
         )
 
-    def forward(self, condition, vlen=None):
-        vlen = vlen if vlen else self.vlen
+    def forward(self, c):
+        """
+        c: condition
+        """
 
-        code = condition.new(
-            len(condition), vlen, self.code_size).normal_()
+        Z = condition.new(len(c), self.dim_Z).normal_()
+        Zc = torch.cat((Z, c), 1)[..., None, None, None]
 
-        code[..., self.dim_Z:] = condition[:, None, :]
-
-        H,_ = self.gru(code)
-        H = torch.flatten(H, 0, 1)[..., None, None]
-        out = self.main(H).view(-1, vlen, 3, 64, 64)
-
-        return out.permute(0, 2, 1, 3, 4)
+        return self.main(Zc)
