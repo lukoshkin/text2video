@@ -55,11 +55,10 @@ if __name__ == "__main__":
     video_dataset = LabeledVideoDataset(
             new_path, cache, (vlen, 64, 64, 3), check_spell=True)
 
-    batch_size = int(args['--batch-size'])
-    num_workers = int(args['--num_workers'])
     video_loader = DataLoader(
-            video_dataset, batch_size, shuffle=True,
-            num_workers=num_workers, pin_memory=False, drop_last=True)
+            video_dataset, int(args['--batch-size']), 
+            shuffle=True, num_workers=int(args['--num_workers']), 
+            pin_memory=False, drop_last=True)
 
     val_samples = [168029]  # pushing book from left to right
     val_samples = video_dataset.getById(val_samples)
@@ -68,22 +67,20 @@ if __name__ == "__main__":
         t2i = pickle.load(fp)
         max_sen_len = int(fp.readline())
 
-    n_spots = 16
-
     device = torch.device(device)
     emb_weights = getGloveEmbeddings('../embeddings', cache, t2i) 
     emb_weights = torch.tensor(emb_weights, device=device)
-    text_encoder = models.TextEncoder(n_spots, emb_weights)
+    text_encoder = models.TextEncoder(emb_weights, proj=True)
 
     dim_Z = 50
     emb_size = 64
-    generator = models.VideoGenerator(dim_Z, (n_spots, emb_size))
+    generator = models.VideoGenerator(dim_Z, emb_size)
 
     image_discriminator = models.ImageDiscriminator(
             cond_size=emb_size, noise=args['--noise'], 
             sigma=float(args['--sigma']))
     video_discriminator = models.VideoDiscriminator(
-            cond_shape=(n_spots, emb_size), noise=args['--noise'],
+            cond_size=emb_size, noise=args['--noise'],
             sigma=float(args['--sigma']))
 
     generator.to(device)
@@ -97,16 +94,16 @@ if __name__ == "__main__":
     opt_list = [
         optim.Adam(
             generator.parameters(), lr=2e-4, 
-            betas=(.5, .999), weight_decay=1e-5),
+            betas=(.3, .999), weight_decay=1e-5),
         optim.Adam(
             dis_dict['image'].parameters(), lr=2e-4, 
-            betas=(.5, .999), weight_decay=1e-5),
+            betas=(.3, .999), weight_decay=1e-5),
         optim.Adam(
             dis_dict['video'].parameters(), lr=2e-4, 
-            betas=(.5, .999), weight_decay=1e-5),
+            betas=(.3, .999), weight_decay=1e-5),
         optim.Adam(
             text_encoder.parameters(), lr=2e-4, 
-            betas=(.5, .999), weight_decay=1e-5)
+            betas=(.3, .999), weight_decay=1e-5)
     ]
 
     trainer = Trainer (

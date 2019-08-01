@@ -61,12 +61,15 @@ class Trainer:
                      'generator': 0,
                      'encoder': 0}
 
-    def getImageBatchIndices(self, batch_size, vlen):
-        sample_ids = torch.arange(batch_size)
-        frame_ids = torch.multinomial(
-                torch.ones(vlen), batch_size, replacement=True)
+    def composeBatchOfImages(self, videos):
+        bs = videos.size(0)
+        nf = videos.size(2)
+        images = videos[
+                torch.arange(bs), :,
+                torch.multinomial(
+                    torch.ones(nf), bs, replacement=True), ... ]
 
-        return sample_ids, frame_ids
+        return images
 
     def zeroCentredGradPenalty(self, output, inputs):
         jacobians = autograd.grad(
@@ -80,37 +83,25 @@ class Trainer:
 
         return res 
 
-    def formTrainingPairs(self, videos, at_video):
-        sample_ids, frame_ids = self.getImageBatchIndices(
-                videos.size(0), videos.size(2))
-        images = videos[sample_ids, :, frame_ids, ...]
-        at_image = at_video[sample_ids, frame_ids, :]
+    def formTrainingPairs(self, videos, condition):
+        images = self.composeBatchOfImages(videos)
 
-        self.pairs['pos','video'] = (videos, at_video)
-        self.pairs['neg','video'] = (videos, torch.roll(at_video, 1, 0))
+        self.pairs['pos','video'] = (videos, condition)
+        self.pairs['neg','video'] = (videos, torch.roll(condition, 1, 0))
         self.pairs['neg','video'][1].register_hook(lambda grad: grad * 2)
 
-        self.pairs['pos','image'] = (images, at_image)
-        self.pairs['neg','image'] = (images, torch.roll(at_image, -1, 0))
+        self.pairs['pos','image'] = (images, condition)
+        self.pairs['neg','image'] = (images, torch.roll(condition, -1, 0))
         self.pairs['neg','image'][1].register_hook(lambda grad: grad * 2)
 
-        fake_videos = self.generator(at_video.detach())
-        fake_images = fake_videos[sample_ids, :, frame_ids, ...]
+        fake_videos = self.generator(condition.detach())
+        fake_images = self.composeBatchOfImages(fake_videos)
 
         fake_videos.register_hook(lambda grad: -grad)
         fake_images.register_hook(lambda grad: -grad)
         
-        self.pairs['gen','image'] = (fake_images, at_image.detach())
-        self.pairs['gen','video'] = (fake_videos, at_video.detach())
-
-    def samenessPenalty(self, A):
-        AAt = torch.einsum('ikp,ikq->ipq', A, A)
-        mask = torch.eye(
-                AAt.size(1), dtype=torch.uint8, device=AAt.device)
-        res = torch.mean(
-                torch.norm(AAt.masked_fill(mask, 0), dim=(1, 2)) ** 2)
-
-        return res
+        self.pairs['gen','image'] = (fake_images, condition.detach())
+        self.pairs['gen','video'] = (fake_videos, condition.detach())
     
     def calculateBaseLossTerms(self, kind):
         pos_scores = self.dis_dict[kind](*self.pairs['pos',kind])
@@ -131,12 +122,10 @@ class Trainer:
 
     def passBatchThroughNetwork(self, labels, videos, senlen):
         videos.requires_grad_(True)
-        at_video, A = self.encoder(labels, senlen)
-        self.formTrainingPairs(videos, at_video)
+        condition = self.encoder(labels, senlen)
+        self.formTrainingPairs(videos, condition)
 
-        loss = self.samenessPenalty(A)
-        self.logs['encoder'] -= loss.item()
-
+        loss = videos.new(1).fill_(0) 
         for opt in self.opt_list:
             opt.zero_grad()
         for kind in ['image', 'video']:
@@ -174,8 +163,8 @@ class Trainer:
 
             self.generator.eval()
             with torch.no_grad():
-                at_video,_ = self.encoder(texts, lens)
-                movies = self.generator(at_video)
+                condition = self.encoder(texts, lens)
+                movies = self.generator(condition)
             writer.add_video('Fakes', to_video(movies), epoch)
             self.generator.train()
             # --------------------------

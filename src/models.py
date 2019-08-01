@@ -19,19 +19,15 @@ class Noise(nn.Module):
 class TextEncoder(nn.Module):
     """
     Args:
-        n_spots         number of vectors in attention matrix
         emb_weights     matrix of size (n_tokens, emb_dim) 
-
-        set of the rest ('extra') tuning hyperparameters
+        proj            project to lower dimension space
 
         hyppar[0]       number of gru hidden units
         hyppar[1]       projection dimensionality
     """
     def __init__(
-            self, emb_weights, 
-            batch_size=None, hyppar=(64,64)):
+            self, emb_weights, proj=False, hyppar=(64,64)):
         super().__init__()
-        self.initial = None
         self.embed = nn.Embedding.from_pretrained (
                         emb_weights, 
                         freeze=False,
@@ -41,27 +37,22 @@ class TextEncoder(nn.Module):
             emb_weights.size(1), hyppar[0], 
             batch_first=True, bidirectional=True
         )
-        self.proj = nn.Sequential (
-            nn.Linear(hyppar[0]*2, hyppar[1]),
-            nn.LeakyReLU(.2, inplace=True)
-        )
-        if batch_size:
-            self.initial = (2, batch_size, hyppar[0])
+        if proj:
+            self.proj = nn.Sequential (
+                nn.Linear(hyppar[0]*2, hyppar[1]),
+                nn.LeakyReLU(.2, inplace=True)
+            )
+        else: 
+            self.proj = lambda x: x
 
     def forward(self, text_ids, lengths):
         lengths, sortbylen = lengths.sort(0, descending=True)
         H = self.embed(text_ids[sortbylen])
         H = pack_padded_sequence(H, lengths, batch_first=True)
 
-        if self.initial is not None:
-            H, last = self.gru(H, self.initial)
-        else:
-            H, last = self.gru(H)
+        _, last = self.gru(H)
 
-        return H, last
-        cuts = torch.cumsum(lengths-1, 0)
-
-        return self.proj(H[0][cuts, :])
+        return self.proj(torch.cat(tuple(last), 1))
 
 
 def block1x1(Conv, inC, outC, noise, sigma, bn):
@@ -174,69 +165,72 @@ class ImageDiscriminator(nn.Module):
             nn.Sigmoid()
         )
 
-    def forward(self, input, condition):
-        out = self.D1(input)
-        # >> original shape of condition: (-1, cond_size)
-        condition = condition[..., None, None].expand(*condition.shape, 4, 4)
-        # << after taking a slice: (-1, cond_size, 1, 1);
+    def forward(self, x, c):
+        """
+        x: image
+        c: condition
+        """
+        x = self.D1(x)
+        c = c[..., None, None].expand(*c.shape, 4, 4)
+        # << original c.shape: (-1, cond_size)
+        #    after taking a slice: (-1, cond_size, 1, 1);
         #    after expand: (-1, cond_size, 4, 4)
-        out = torch.cat((out, condition), 1)
+        x = torch.cat((x, c), 1)
 
-        return self.D2(out)
+        return self.D2(x)
 
 
 class VideoDiscriminator(nn.Module):
     def __init__(
-            self, in_channels=3, cond_shape=(16, 64),
+            self, in_channels=3, cond_size=64,
             base_width=32, noise=False, sigma=None):
         super().__init__()
 
         # ResNetBottlneck 'partial class' 
         ResNetBlock = lambda inC, outC, stride: ResNetBottleneck(
-            nn.Conv3d, inC, outC, stride, noise=noise, sigma=sigma)#, bn=False)
+            nn.Conv3d, inC, outC, stride, noise=noise, sigma=sigma)
 
         self.D1 = nn.Sequential (
-            nn.Conv3d(in_channels, base_width, 1), 
-            ResNetBlock(base_width, base_width*2, (1,2,2)),
-            ResNetBlock(base_width*2, base_width*4, (1,2,2)),
+            nn.Conv3d(in_channels, base_width, 1, 2), 
+            ResNetBlock(base_width, base_width*2, 2),
+            ResNetBlock(base_width*2, base_width*4, 2),
+            ResNetBlock(base_width*4, base_width*8, 2),
         )
-        # << ouput size: (-1, base_width*8, cond_shape[0], 16, 16)
+        # << ouput size: (-1, base_width*8, 1, 4, 4)
 
-        cat_dim = base_width*4 + cond_shape[1]
+        cat_dim = base_width*8 + cond_size
         self.D2 = nn.Sequential (
-            ResNetBlock(cat_dim, cat_dim, 2),
-            ResNetBlock(cat_dim, base_width*8, 2),
-            nn.Conv3d(base_width*8, 1, 4),
+            ResNetBlock(cat_dim, cat_dim, 1),
+            nn.Conv3d(cat_dim, 1, (1, 4, 4)),
             nn.Sigmoid()
         )
 
-    def forward(self, input, condition):
-        out = self.D1(input)
-        condition = condition.expand(16, 16, *condition.shape)
-        # << condition.shape: (16, 16, -1, *cond_shape) 
-        condition = condition.permute(2, 4, 3, 0, 1)
-        # << condition.shape: (-1, cond_shape[::-1], 16, 16)
-        out = torch.cat((out, condition), 1)
+    def forward(self, x, c):
+        """
+        x: video
+        c: condition
+        """
+        x = self.D1(x)
+        c = c.view(*c.shape,1,1,1).expand(*c.shape,1,4,4)
+        x = torch.cat((x, c), 1)
         
-        return self.D2(out)
+        return self.D2(x)
 
 
 class VideoGenerator(nn.Module):
     """
     Args:
         dim_Z           noise dimensionality
-        cond_shape      2-tuple:  (r, u)
-                        r - number of text features 
-                        u - their emb. size 
+        cond_size       condition size
     """
     def __init__(
-            self, dim_Z, cond_shape=(16, 64), 
+            self, dim_Z, cond_size=64, 
             n_colors=3, base_width=64, video_length=16):
         super().__init__()
         self.dim_Z = dim_Z
         self.n_colors = n_colors
         self.vlen = video_length
-        self.code_size = dim_Z + cond_shape[1]
+        self.code_size = dim_Z + cond_size
 
         self.gru = nn.GRU(
                 self.code_size, self.code_size, batch_first=True)
@@ -271,12 +265,10 @@ class VideoGenerator(nn.Module):
 
         code = condition.new(
             len(condition), vlen, self.code_size).normal_()
-        initial = code.new(
-            1, len(condition), self.code_size).normal_()
 
-        code[..., self.dim_Z:] = condition
+        code[..., self.dim_Z:] = condition[:, None, :]
 
-        H,_ = self.gru(code, initial)
+        H,_ = self.gru(code)
         H = torch.flatten(H, 0, 1)[..., None, None]
         out = self.main(H).view(-1, vlen, 3, 64, 64)
 
