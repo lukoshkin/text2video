@@ -17,6 +17,8 @@ Options:
 
     --video-length=<len>        original length of videos in the video batch [default: 32]
     --training-time=<count>     number of training epochs [default: 100000]
+
+    --encoder=<str>             type of encoder: simple, mere, joint [default: mere]
 """
 import docopt
 import pickle
@@ -58,10 +60,13 @@ if __name__ == "__main__":
     video_loader = DataLoader(
             video_dataset, int(args['--batch-size']), 
             shuffle=True, num_workers=int(args['--num_workers']), 
-            pin_memory=False, drop_last=True)
+            pin_memory=True, drop_last=True)
 
-    val_samples = [168029]  # pushing book from left to right
+    val_samples = [168029, 157604, 71563, 82109]
     val_samples = video_dataset.getById(val_samples)
+    lens = torch.tensor(val_samples.f0, device=device)
+    texts = torch.tensor(val_samples.f1, device=device)
+    movies = torch.tensor(val_samples.f2, device=device)
 
     with open(cache / 'vocab.pkl', 'rb') as fp:
         t2i = pickle.load(fp)
@@ -70,14 +75,22 @@ if __name__ == "__main__":
     device = torch.device(device)
     emb_weights = getGloveEmbeddings('../embeddings', cache, t2i) 
     emb_weights = torch.tensor(emb_weights, device=device)
-    text_encoder = models.TextEncoder(emb_weights, proj=True)
+
+    if args['--encoder'] == 'simple':
+        text_encoder = models.SimpleTextEncoder(emb_weights)
+    elif args['--encoder'] == 'mere':
+        text_encoder = models.TextEncoder(emb_weights, proj=True)
+    elif args['--encoder'] == 'joint':
+        pass
+    else:
+        raise TypeError('Invalid encoder type')
 
     dim_Z = 50
     emb_size = 64
     generator = models.VideoGenerator(dim_Z, emb_size)
 
     image_discriminator = models.ImageDiscriminator(
-            cond_size=emb_size, noise=args['--noise'], 
+            cond_size=emb_size, noise=args['--noise'],
             sigma=float(args['--sigma']))
     video_discriminator = models.VideoDiscriminator(
             cond_size=emb_size, noise=args['--noise'],
@@ -101,14 +114,16 @@ if __name__ == "__main__":
         optim.Adam(
             dis_dict['video'].parameters(), lr=2e-4, 
             betas=(.3, .999), weight_decay=1e-5),
-        optim.Adam(
-            text_encoder.parameters(), lr=2e-4, 
-            betas=(.3, .999), weight_decay=1e-5)
     ]
+
+    if args['--encoder'] == 'mere':
+        opt_list += [optim.Adam(
+            text_encoder.parameters(), lr=2e-4,
+            betas=(.3, .999), weight_decay=1e-5)]
 
     trainer = Trainer (
             text_encoder, dis_dict, generator,
             opt_list, video_loader, val_samples,
             cache, int(args['--training-time'])
     )
-    trainer.train()
+    trainer.train(lens, texts, movies)

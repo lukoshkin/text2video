@@ -16,25 +16,43 @@ class Noise(nn.Module):
         return x
 
 
+class SimpleTextEncoder:
+    """
+    Embedding of a sentence is obtained as the average
+    of pretrained GloVe embeddings of the words
+    that make up the sentence
+    """
+    def __init__(self, emb_weights):
+        self.embed = nn.Embedding.from_pretrained(
+                emb_weights, padding_idx=0)
+
+    def __call__(self, text_ids, lengths):
+        return self.embed(text_ids).sum(1) / lengths[:, None]
+
+
 class TextEncoder(nn.Module):
     """
     Args:
         emb_weights     matrix of size (n_tokens, emb_dim) 
         proj            project to lower dimension space
+        train_embs      whether to train embeddings or not
+                        (by default, the value is False,
+                         i.e. emb_weights are frozen)
 
         hyppar[0]       number of gru hidden units
         hyppar[1]       projection dimensionality
     """
     def __init__(
-            self, emb_weights, proj=False, hyppar=(64,64)):
+            self, emb_weights, proj=False,
+            train_embs=False, hyppar=(64,64)):
         super().__init__()
         self.embed = nn.Embedding.from_pretrained (
-                        emb_weights, 
-                        freeze=False,
+                        emb_weights,
+                        freeze=(not train_embs),
                         padding_idx=0 
                     )
-        self.gru = nn.GRU(
-            emb_weights.size(1), hyppar[0], 
+        self.gru = nn.GRU (
+            emb_weights.size(1), hyppar[0],
             batch_first=True, bidirectional=True
         )
         if proj:
@@ -51,8 +69,10 @@ class TextEncoder(nn.Module):
         H = pack_padded_sequence(H, lengths, batch_first=True)
 
         _, last = self.gru(H)
+        out = self.proj(torch.cat(tuple(last), 1))
+        _, unsort = sortbylen.sort(0)
 
-        return self.proj(torch.cat(tuple(last), 1))
+        return out[unsort]
 
 
 def block1x1(Conv, inC, outC, noise, sigma, bn):
@@ -62,7 +82,7 @@ def block1x1(Conv, inC, outC, noise, sigma, bn):
     """
     if Conv == nn.Conv3d: 
         BatchNorm = nn.BatchNorm3d
-    elif Conv == nn.Conv2d: 
+    elif Conv == nn.Conv2d:
         BatchNorm = nn.BatchNorm2d
     else:
         raise TypeError (
@@ -104,21 +124,21 @@ def block3x3(Conv, width, stride, noise, sigma=.1, bn=True):
 class ResNetBottleneck(nn.Module):
     """
     Args:
-        Conv        nn.Conv2d or nn.Conv3d 
+        Conv        nn.Conv2d or nn.Conv3d
         width       width of bottleneck
         stride      convolution stride (int or tuple of ints)
-        noise       boolen flag: use Noise layer or do not 
+        noise       boolen flag: use Noise layer or do not
         sigma       standard deviation of the gaussian noise
                     used in Noise layer
         bn          whether to add BatchNorm layer
     """
     def __init__(
-            self, Conv, in_channels, out_channels, stride=1, 
+            self, Conv, in_channels, out_channels, stride=1,
             width=None, noise=False, sigma=None, bn=True):
         super().__init__()
 
         self.proj = None
-        if ((torch.tensor(stride) > 1).any() or 
+        if ((torch.tensor(stride) > 1).any() or
                 in_channels != out_channels):
             self.proj = Conv(in_channels, out_channels, 1, stride)
             
@@ -141,10 +161,15 @@ class ResNetBottleneck(nn.Module):
 
 
 class ImageDiscriminator(nn.Module):
+    """
+    Args:
+        k   number of selected frames
+    """
     def __init__(
-            self, in_channels=3, cond_size=64,
+            self, in_channels=3, cond_size=64, k=8,
             base_width=32, noise=False, sigma=None):
         super().__init__()
+        self.k = k
         
         # ResNetBottlneck 'partial class'
         ResNetBlock = lambda inC, outC, stride: ResNetBottleneck(
@@ -167,15 +192,21 @@ class ImageDiscriminator(nn.Module):
 
     def forward(self, x, c):
         """
-        x: image
-        c: condition
+        x: video
+        c: condition (do not confuse
+           with C - number of filters)
         """
+        selected_frames = torch.multinomial(
+                torch.ones(x.size(2)), self.k)
+        # >> x.shape: (-1, C, D, H, W)
+        x = x[:, :, selected_frames, ...]
+        # << x.shape: (-1, C, k, H, W)
+        x = torch.flatten(x.permute(0, 2, 1, 3, 4), 0, 1)
+        # << x.shape: (-1, C, H, W)
+
         x = self.D1(x)
-        c = c[..., None, None].expand(*c.shape, 4, 4)
-        # << original c.shape: (-1, cond_size)
-        #    after taking a slice: (-1, cond_size, 1, 1);
-        #    after expand op.: (-1, cond_size, 4, 4)
-        x = torch.cat((x, c), 1)
+        c = c[None, ..., None, None].expand(self.k, *c.shape, 4, 4)
+        x = torch.cat((x, torch.flatten(c,0,1)), 1)
 
         return self.D2(x)
 
@@ -186,7 +217,7 @@ class VideoDiscriminator(nn.Module):
             base_width=32, noise=False, sigma=None):
         super().__init__()
 
-        # ResNetBottlneck 'partial class' 
+        # ResNetBottlneck 'partial class'
         ResNetBlock = lambda inC, outC, stride: ResNetBottleneck(
             nn.Conv3d, inC, outC, stride, noise=noise, sigma=sigma)
 
@@ -230,17 +261,13 @@ class VideoGenerator(nn.Module):
         self.dim_Z = dim_Z
         self.n_colors = n_colors
         self.vlen = video_length
-        self.code_size = dim_Z + cond_size
-
-        self.gru = nn.GRU(
-                self.code_size, self.code_size, batch_first=True)
 
         ResNetBlock = lambda inC, outC, stride: ResNetBottleneck(
                 nn.Conv3d, inC, outC, stride)
 
         self.main = nn.Sequential(
             nn.Upsample(scale_factor=(1,2,2)),
-            ResNetBlock(self.code_size, base_width*8, 1),
+            ResNetBlock(dim_Z + cond_size, base_width*8, 1),
 
             nn.Upsample(scale_factor=2),
             ResNetBlock(base_width*8, base_width*8, 1),
@@ -255,7 +282,7 @@ class VideoGenerator(nn.Module):
             ResNetBlock(base_width*2, base_width, 1),
 
             nn.Upsample(scale_factor=2),
-            nn.Conv2d(base_width, self.n_colors, 3, 1, 1),
+            nn.Conv3d(base_width, self.n_colors, 3, 1, 1),
 
             nn.Tanh()
         )
@@ -264,8 +291,7 @@ class VideoGenerator(nn.Module):
         """
         c: condition
         """
-
-        Z = condition.new(len(c), self.dim_Z).normal_()
+        Z = c.new(len(c), self.dim_Z).normal_()
         Zc = torch.cat((Z, c), 1)[..., None, None, None]
 
         return self.main(Zc)

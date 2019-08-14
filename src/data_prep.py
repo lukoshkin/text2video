@@ -97,7 +97,7 @@ class LabeledVideoDataset(Dataset):
     def __getitem__(self, index):
         sen_len, label, video = self.data[index]
 
-        return {'sen_len': sen_len,
+        return {'slens': sen_len,
                 'label': label,
                 'video': self.transform(video)}
 
