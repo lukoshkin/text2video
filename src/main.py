@@ -19,6 +19,8 @@ Options:
     --training-time=<count>     number of training epochs [default: 100000]
 
     --encoder=<str>             type of encoder: simple, mere, joint [default: mere]
+    --pp=<count>                print period [default: 0]
+    --lp=<count>                log period [default: 20]
 """
 import docopt
 import pickle
@@ -77,8 +79,10 @@ if __name__ == "__main__":
     emb_weights = torch.tensor(emb_weights, device=device)
 
     if args['--encoder'] == 'simple':
+        emb_size = 50
         text_encoder = models.SimpleTextEncoder(emb_weights)
     elif args['--encoder'] == 'mere':
+        emb_size = 64
         text_encoder = models.TextEncoder(emb_weights, proj=True)
     elif args['--encoder'] == 'joint':
         pass
@@ -86,7 +90,6 @@ if __name__ == "__main__":
         raise TypeError('Invalid encoder type')
 
     dim_Z = 50
-    emb_size = 64
     generator = models.VideoGenerator(dim_Z, emb_size)
 
     image_discriminator = models.ImageDiscriminator(
@@ -116,14 +119,15 @@ if __name__ == "__main__":
             betas=(.3, .999), weight_decay=1e-5),
     ]
 
-    if args['--encoder'] == 'mere':
+    train_enc = (args['--encoder'] == 'mere')
+    if train_enc:
         opt_list += [optim.Adam(
             text_encoder.parameters(), lr=2e-4,
             betas=(.3, .999), weight_decay=1e-5)]
 
     trainer = Trainer (
             text_encoder, dis_dict, generator,
-            opt_list, video_loader, val_samples,
-            cache, int(args['--training-time'])
+            opt_list, video_loader, cache,
+            train_enc, int(args['--training-time']),
     )
-    trainer.train(lens, texts, movies)
+    trainer.train(lens, texts, movies, int(args['--pp']), int(args['--lp']))

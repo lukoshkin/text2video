@@ -27,7 +27,10 @@ class SimpleTextEncoder:
                 emb_weights, padding_idx=0)
 
     def __call__(self, text_ids, lengths):
-        return self.embed(text_ids).sum(1) / lengths[:, None]
+        return self.embed(text_ids).sum(1) / lengths[:, None].float()
+
+    def to(self, device):
+        self.embed = self.embed.to(device)
 
 
 class TextEncoder(nn.Module):
@@ -261,37 +264,47 @@ class VideoGenerator(nn.Module):
         self.dim_Z = dim_Z
         self.n_colors = n_colors
         self.vlen = video_length
+        self.code_size = dim_Z + cond_size
+
+        self.gru = nn.GRU(
+                self.code_size, self.code_size, batch_first=True)
 
         ResNetBlock = lambda inC, outC, stride: ResNetBottleneck(
                 nn.Conv3d, inC, outC, stride)
 
         self.main = nn.Sequential(
             nn.Upsample(scale_factor=(1,2,2)),
-            ResNetBlock(dim_Z + cond_size, base_width*8, 1),
+            ResNetBlock(self.code_size, base_width*8, 1),
 
-            nn.Upsample(scale_factor=2),
+            nn.Upsample(scale_factor=(1,2,2)),
             ResNetBlock(base_width*8, base_width*8, 1),
 
-            nn.Upsample(scale_factor=2),
+            nn.Upsample(scale_factor=(1,2,2)),
             ResNetBlock(base_width*8, base_width*4, 1),
 
             nn.Upsample(scale_factor=(1,2,2)),
             ResNetBlock(base_width*4, base_width*2, 1),
 
-            nn.Upsample(scale_factor=2),
+            nn.Upsample(scale_factor=(1,2,2)),
             ResNetBlock(base_width*2, base_width, 1),
 
-            nn.Upsample(scale_factor=2),
+            nn.Upsample(scale_factor=(1,2,2)),
             nn.Conv3d(base_width, self.n_colors, 3, 1, 1),
 
             nn.Tanh()
         )
 
-    def forward(self, c):
+    def forward(self, c, vlen=None):
         """
-        c: condition
+        c: condition (batch_size, cond_size)
+        vlen: video length
         """
-        Z = c.new(len(c), self.dim_Z).normal_()
-        Zc = torch.cat((Z, c), 1)[..., None, None, None]
+        vlen = vlen if vlen else self.vlen
 
-        return self.main(Zc)
+        code = c.new(len(c), vlen, self.code_size).normal_()
+        code[..., self.dim_Z:] = c[:, None, :]
+
+        H,_ = self.gru(code)
+        H = H.permute(0, 2, 1)[..., None, None]
+
+        return self.main(H)
