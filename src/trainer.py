@@ -71,8 +71,8 @@ class Trainer:
         gen_scores = self.dis_dict[kind](*self.pairs['gen'])
 
         L1 = torch.log(pos_scores).mean()
-        L2 = .5 * torch.log1p(-neg_scores).mean()
-        L3 = .5 * torch.log1p(-gen_scores).mean()
+        L2 = torch.log1p(-neg_scores).mean()
+        L3 = torch.log1p(-gen_scores).mean()
 
         self.logs[f'{kind} dis'] += (L1 + L2 + L3).item()
         self.logs['generator'] += L3.item()

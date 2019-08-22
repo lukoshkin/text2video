@@ -109,7 +109,7 @@ if __name__ == "__main__":
 
     opt_list = [
         optim.Adam(
-            generator.parameters(), lr=2e-4, 
+            generator.parameters(), lr=5e-5, 
             betas=(.3, .999), weight_decay=1e-5),
         optim.Adam(
             dis_dict['image'].parameters(), lr=2e-4, 
