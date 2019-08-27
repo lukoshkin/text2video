@@ -3,7 +3,8 @@ import torch.nn as nn
 import torch.utils.data
 
 from torch.nn.utils.rnn import pack_padded_sequence, PackedSequence
-from resnet import BasicBlock
+from blocks import DBlock, GBlock, CGBlock
+from convgru import ConvGRU
 
 
 class SimpleTextEncoder:
@@ -68,7 +69,7 @@ class TextEncoder(nn.Module):
         return out[unsort]
 
 
-class ImageDiscriminator(nn.Module):
+class StackImageDiscriminator(nn.Module):
     """
     Args:
         k   number of selected frames
@@ -78,21 +79,17 @@ class ImageDiscriminator(nn.Module):
             base_width=32, noise=False, sigma=.2):
         super().__init__()
         self.k = k
-        
-        # Bottleneck 'partial class'
-        ResNetBlock = lambda inC, outC, stride: BasicBlock(
-            '2d', inC, outC, stride, bn=False, noise=noise, sigma=sigma)
-
         self.D1 = nn.Sequential (
-            ResNetBlock(in_channels, base_width, 2), 
-            ResNetBlock(base_width, base_width*2, 2),
-            ResNetBlock(base_width*2, base_width*4, 2),
+            nn.Conv2d(in_channels, base_width, 1),
+            DBlock('2d', base_width, base_width, 2), 
+            DBlock('2d', base_width, base_width*2, 2),
+            DBlock('2d', base_width*2, base_width*4, 2),
         )
-        # << output size: (-1, base_width*8, 4, 4)
+        # << output size: (-1, base_width*4, 4, 4)
 
         cat_dim = base_width*4 + cond_size
         self.D2 = nn.Sequential (
-            ResNetBlock(cat_dim, cat_dim*2, 1),
+            DBlock('2d', cat_dim, cat_dim*2, 1),
             nn.Conv2d(cat_dim*2, 1, 4),
             nn.Sigmoid()
         )
@@ -118,27 +115,23 @@ class ImageDiscriminator(nn.Module):
         return self.D2(x)
 
 
-class VideoDiscriminator(nn.Module):
+class StackVideoDiscriminator(nn.Module):
     def __init__(
             self, in_channels=3, cond_size=64,
             base_width=32, noise=False, sigma=.2):
         super().__init__()
-
-        # BasicBlock 'partial class'
-        ResNetBlock = lambda inC, outC, stride: BasicBlock(
-            '3d', inC, outC, stride, bn=False, noise=noise, sigma=sigma)
-
         self.D1 = nn.Sequential (
-            ResNetBlock(in_channels, base_width, 2), 
-            ResNetBlock(base_width, base_width*2, 2),
-            ResNetBlock(base_width*2, base_width*4, 2),
-            ResNetBlock(base_width*4, base_width*8, (2,1,1)),
+            nn.Conv3d(in_channels, base_width, 1),
+            DBlock('3d', base_width, base_width, 2), 
+            DBlock('3d', base_width, base_width*2, 2),
+            DBlock('3d', base_width*2, base_width*4, 2),
+            DBlock('3d', base_width*4, base_width*8, (2,1,1)),
         )
-        # << ouput size: (-1, base_width*8, 1, 4, 4)
+        # << ouput size: (-1, base_width*4, 1, 4, 4)
 
         cat_dim = base_width*8 + cond_size
         self.D2 = nn.Sequential (
-            ResNetBlock(cat_dim, cat_dim*2, 1),
+            DBlock('3d', cat_dim, cat_dim*2, 1),
             nn.Conv3d(cat_dim*2, 1, (1, 4, 4)),
             nn.Sigmoid()
         )
@@ -155,7 +148,7 @@ class VideoDiscriminator(nn.Module):
         return self.D2(x)
 
 
-class VideoGenerator(nn.Module):
+class SimpleVideoGenerator(nn.Module):
     """
     Args:
         dim_Z           noise dimensionality
@@ -171,27 +164,14 @@ class VideoGenerator(nn.Module):
         self.code_size = dim_Z + cond_size
 
         self.gru = nn.GRU(
-                self.code_size, self.code_size, batch_first=True)
-
-        ResNetBlock = lambda inC, outC, stride: BasicBlock(
-                '3d', inC, outC, stride)
+            self.code_size, self.code_size, batch_first=True)
 
         self.main = nn.Sequential(
-            nn.Upsample(scale_factor=(1,2,2)),
-            ResNetBlock(self.code_size, base_width*8, 1),
-
-            nn.Upsample(scale_factor=(1,2,2)),
-            ResNetBlock(base_width*8, base_width*4, 1),
-
-            nn.Upsample(scale_factor=(1,2,2)),
-            ResNetBlock(base_width*4, base_width*2, 1),
-
-            nn.Upsample(scale_factor=(1,2,2)),
-            ResNetBlock(base_width*2, base_width, 1),
-
-            nn.Upsample(scale_factor=(1,2,2)),
-            nn.Conv3d(base_width, self.n_colors, 3, 1, 1),
-
+            GBlock(self.code_size, base_width*8, (1,2,2)),
+            GBlock(base_width*8, base_width*4, (1,2,2)),
+            GBlock(base_width*4, base_width*2, (1,2,2)),
+            GBlock(base_width*2, base_width, (1,2,2)),
+            GBlock(base_width, self.n_colors, (1,2,2)),
             nn.Tanh()
         )
 
@@ -209,3 +189,60 @@ class VideoGenerator(nn.Module):
         H = H.permute(0, 2, 1)[..., None, None]
 
         return self.main(H)
+
+
+class TestVideoGenerator(nn.Module):
+    """
+    Args:
+        dim_Z           noise dimensionality
+        cond_size       condition size
+    """
+    def __init__(
+            self, dim_Z, cond_size=64, 
+            n_colors=3, base_width=128, video_length=16):
+        super().__init__()
+        self.dim_Z = dim_Z
+        self.n_colors = n_colors
+        self.vlen = video_length
+        self.code_size = dim_Z + cond_size
+
+        self.gru = nn.GRU(
+            self.code_size, self.code_size, batch_first=True)
+
+        
+        CGB = lambda inC, outC, stride: CGBlock(
+                '3d',self.code_size, inC, outC, stride)
+
+        self.gblock1 = CGB(self.code_size, base_width*8, (1,2,2))
+        self.gblock2 = CGB(base_width*8, base_width*4, (1,2,2))
+        self.gblock3 = CGB(base_width*4, base_width*2, (1,2,2))
+        self.cgru = ConvGRU(
+                base_width*2, base_width*2, 3, spectral_norm=True) 
+        self.gblock4 = CGB(base_width*2, base_width, (1,2,2))
+        self.gblock5 = CGB(base_width, self.n_colors, (1,2,2))
+
+    def forward(self, c, vlen=None):
+        """
+        c: condition (batch_size, cond_size)
+        vlen: video length
+        """
+        vlen = vlen if vlen else self.vlen
+
+        code = c.new(len(c), vlen, self.code_size).normal_()
+        code[..., self.dim_Z:] = c[:, None, :]
+
+        vcon = c.new(len(c), self.code_size).normal_()
+        vcon[:, self.dim_Z:] = c
+
+        H,_ = self.gru(code)
+        H = H.permute(0, 2, 1)[..., None, None]
+
+        H = self.gblock1(H, vcon)
+        H = self.gblock2(H, vcon)
+        H = self.gblock3(H, vcon)
+        H,_ = self.cgru(H)
+        H = self.gblock4(H, vcon)
+        H = self.gblock5(H, vcon)
+
+        return torch.tanh(H)
+

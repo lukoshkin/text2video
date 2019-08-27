@@ -86,7 +86,6 @@ class LabeledVideoDataset(Dataset):
                      ('', 'int64', max_len),
                      ('', 'float32', (C, D//step, H, W))])
 
-            # save maximum sen. length to use it further (in 'main.py')
             print('No of corrupted videos', corrupted)
             print(f'Caching database to {file_name}.db')
             with open(cache / f'{file_name}.db', 'wb') as fp:
