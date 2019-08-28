@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch.utils.data
 
 from torch.nn.utils.rnn import pack_padded_sequence, PackedSequence
+from torch.nn.utils import spectral_norm as SN
+from functools import partial
 from blocks import DBlock, GBlock, CGBlock
 from convgru import ConvGRU
 
@@ -80,8 +82,8 @@ class StackImageDiscriminator(nn.Module):
         super().__init__()
         self.k = k
         self.D1 = nn.Sequential (
-            nn.Conv2d(in_channels, base_width, 1),
-            DBlock('2d', base_width, base_width, 2), 
+            SN(nn.Conv2d(in_channels, base_width, 1)),
+            DBlock('2d', base_width, base_width, 2),
             DBlock('2d', base_width, base_width*2, 2),
             DBlock('2d', base_width*2, base_width*4, 2),
         )
@@ -90,7 +92,7 @@ class StackImageDiscriminator(nn.Module):
         cat_dim = base_width*4 + cond_size
         self.D2 = nn.Sequential (
             DBlock('2d', cat_dim, cat_dim*2, 1),
-            nn.Conv2d(cat_dim*2, 1, 4),
+            SN(nn.Conv2d(cat_dim*2, 1, 4)),
             nn.Sigmoid()
         )
 
@@ -121,8 +123,8 @@ class StackVideoDiscriminator(nn.Module):
             base_width=32, noise=False, sigma=.2):
         super().__init__()
         self.D1 = nn.Sequential (
-            nn.Conv3d(in_channels, base_width, 1),
-            DBlock('3d', base_width, base_width, 2), 
+            SN(nn.Conv3d(in_channels, base_width, 1)),
+            DBlock('3d', base_width, base_width, 2),
             DBlock('3d', base_width, base_width*2, 2),
             DBlock('3d', base_width*2, base_width*4, 2),
             DBlock('3d', base_width*4, base_width*8, (2,1,1)),
@@ -132,7 +134,7 @@ class StackVideoDiscriminator(nn.Module):
         cat_dim = base_width*8 + cond_size
         self.D2 = nn.Sequential (
             DBlock('3d', cat_dim, cat_dim*2, 1),
-            nn.Conv3d(cat_dim*2, 1, (1, 4, 4)),
+            SN(nn.Conv3d(cat_dim*2, 1, (1, 4, 4))),
             nn.Sigmoid()
         )
 
@@ -166,12 +168,14 @@ class SimpleVideoGenerator(nn.Module):
         self.gru = nn.GRU(
             self.code_size, self.code_size, batch_first=True)
 
+        GB = partial(GBlock, '3d', stride=(1,2,2))
+
         self.main = nn.Sequential(
-            GBlock(self.code_size, base_width*8, (1,2,2)),
-            GBlock(base_width*8, base_width*4, (1,2,2)),
-            GBlock(base_width*4, base_width*2, (1,2,2)),
-            GBlock(base_width*2, base_width, (1,2,2)),
-            GBlock(base_width, self.n_colors, (1,2,2)),
+            GB(self.code_size, base_width*8),
+            GB(base_width*8, base_width*4),
+            GB(base_width*4, base_width*2),
+            GB(base_width*2, base_width),
+            GB(base_width, self.n_colors),
             nn.Tanh()
         )
 
@@ -208,18 +212,16 @@ class TestVideoGenerator(nn.Module):
 
         self.gru = nn.GRU(
             self.code_size, self.code_size, batch_first=True)
-
         
-        CGB = lambda inC, outC, stride: CGBlock(
-                '3d',self.code_size, inC, outC, stride)
+        CGB = partial(CGBlock, '3d', self.code_size, stride=(1,2,2))
 
-        self.gblock1 = CGB(self.code_size, base_width*8, (1,2,2))
-        self.gblock2 = CGB(base_width*8, base_width*4, (1,2,2))
-        self.gblock3 = CGB(base_width*4, base_width*2, (1,2,2))
+        self.gblock1 = CGB(self.code_size, base_width*8)
+        self.gblock2 = CGB(base_width*8, base_width*4)
+        self.gblock3 = CGB(base_width*4, base_width*2)
         self.cgru = ConvGRU(
-                base_width*2, base_width*2, 3, spectral_norm=True) 
-        self.gblock4 = CGB(base_width*2, base_width, (1,2,2))
-        self.gblock5 = CGB(base_width, self.n_colors, (1,2,2))
+                base_width*2, base_width*2, 3, spectral_norm=True)
+        self.gblock4 = CGB(base_width*2, base_width)
+        self.gblock5 = CGB(base_width, self.n_colors)
 
     def forward(self, c, vlen=None):
         """
@@ -245,4 +247,3 @@ class TestVideoGenerator(nn.Module):
         H = self.gblock5(H, vcon)
 
         return torch.tanh(H)
-

@@ -1,27 +1,37 @@
 import torch
 from torch import nn
-from torch.nn.utils import spectral_norm as SN
+from torch.nn.utils import spectral_norm
 
 class DBlock(nn.Module):
     """
     Discriminator's block
     """
-    def __init__(self, type, in_channels, out_channels, stride):
+    def __init__(
+            self, type, 
+            in_channels, out_channels, stride, 
+            bn=False, sn=True):
         super().__init__()
         if type == '2d':
             Conv = nn.Conv2d
             AvgPool = nn.AvgPool2d
+            BatchNorm = nn.BatchNorm2d
         elif type == '3d':
             Conv = nn.Conv3d
             AvgPool = nn.AvgPool3d
+            BatchNorm = nn.BatchNorm3d
         else:
             raise TypeError (
                 "__init__(): argument 'type' "
                 "must be '2d' or '3d'"
             )
+        SN = spectral_norm if sn else lambda x: x
+        BatchNorm = BatchNorm if bn else lambda x: nn.Sequential()
+            
         main_list = [
+            BatchNorm(in_channels),
             nn.LeakyReLU(.2, inplace=True),
             SN(Conv(in_channels, out_channels, 3, 1, 1)),
+            BatchNorm(out_channels),
             nn.LeakyReLU(.2, inplace=True),
             SN(Conv(out_channels, out_channels, 3, 1, 1))
         ]
@@ -40,6 +50,10 @@ class DBlock(nn.Module):
 
     def forward(self, x):
         return self.main(x) + self.proj(x)
+
+
+#global variable for the rest of the classes
+SN = spectral_norm
 
 
 class GBlock(nn.Module):
