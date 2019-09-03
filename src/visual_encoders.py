@@ -7,6 +7,10 @@ from convgru import ConvGRU
 from functools import partial
 
 
+def SN(sn):
+    spectral_norm if sn else lambda x: x
+
+
 class VideoEncoder(nn.Module):
     def __init__(
             self, in_colors=3, 
@@ -14,19 +18,16 @@ class VideoEncoder(nn.Module):
         super().__init__()
         block2d = partial(DBlock, '2d', bn=bn, sn=sn)
         block3d = partial(DBlock, '3d', bn=bn, sn=sn)
-        SN = spectral_norm if sn else lambda x: x
-        self.downsampler1 = nn.Sequential (
-            SN(nn.Conv3d(in_colors, base_width, 1)),
+        self.downsampler1 = nn.Sequential(
+            SN(sn)(nn.Conv3d(in_colors, base_width, 1)),
             block3d(base_width, base_width*2, 2),
-            block3d(base_width*2, base_width*4, (1,2,2))
-        )
+            block3d(base_width*2, base_width*4, (1,2,2)))
         self.cgru = ConvGRU(
                 base_width*4, base_width*4, 3, spectral_norm=sn)
-        self.downsampler2 = nn.Sequential (
+        self.downsampler2 = nn.Sequential(
             block2d(base_width*4, base_width*8, 2),
             block2d(base_width*8, base_width*16, 2),
-            block2d(base_width*16, base_width*32, 2)
-        )
+            block2d(base_width*16, base_width*32, 2))
 
     def forward(self, video):
         H = self.downsampler1(video)
@@ -41,11 +42,10 @@ class ProjectionVideoDiscriminator(VideoEncoder):
             self, cond_size, 
             in_colors=3, base_width=32, logits=True):
         super().__init__(in_colors, base_width, bn=False, sn=True)
-        self.proj = nn.Sequential (
-            nn.Linear(cond_size, base_width*32),
-            nn.LeakyReLU(.2, True)
-        )
-        self.pool = nn.Linear(base_width*32, 1)
+        self.proj = nn.Sequential(
+            SN(True)(nn.Linear(cond_size, base_width*32)),
+            nn.LeakyReLU(.2, True))
+        self.pool = SN(True)(nn.Linear(base_width*32, 1))
         if logits: self.activation = nn.Sequential()
         else: self.activation = torch.sigmoid
 
@@ -65,15 +65,13 @@ class ImageEncoder(nn.Module):
         super().__init__()
         self.k = k_frames
         block2d = partial(DBlock, '2d', bn=bn, sn=sn)
-        SN = spectral_norm if sn else lambda x: x
-        self.downsampler = nn.Sequential (
-            SN(nn.Conv2d(in_colors, base_width, 1)),
+        self.downsampler = nn.Sequential(
+            SN(sn)(nn.Conv2d(in_colors, base_width, 1)),
             block2d(base_width, base_width*2, 2),
             block2d(base_width*2, base_width*4, 2),
             block2d(base_width*4, base_width*8, 2),
             block2d(base_width*8, base_width*16, 2),
-            block2d(base_width*16, base_width*32, 2)
-        )
+            block2d(base_width*16, base_width*32, 2))
 
     def forward(self, video):
         frame_ids = torch.multinomial(
@@ -96,11 +94,10 @@ class ProjectionImageDiscriminator(ImageEncoder):
             in_colors=3, k_frames=8, 
             base_width=32, logits=True):
         super().__init__(in_colors, k_frames, base_width, bn=False, sn=True)
-        self.proj = nn.Sequential (
-            nn.Linear(cond_size, base_width*32),
-            nn.LeakyReLU(.2, True)
-        )
-        self.pool = nn.Linear(base_width*32, 1)
+        self.proj = nn.Sequential(
+            SN(True)(nn.Linear(cond_size, base_width*32)),
+            nn.LeakyReLU(.2, True))
+        self.pool = SN(True)(nn.Linear(base_width*32, 1))
         if logits: self.activation = nn.Sequential()
         else: self.activation = torch.sigmoid
 
