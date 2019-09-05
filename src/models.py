@@ -6,7 +6,7 @@ from torch.nn.utils.rnn import pack_padded_sequence, PackedSequence
 from torch.nn.utils import spectral_norm as SN
 from functools import partial
 from blocks import DBlock, GBlock, CGBlock
-from convgru import ConvGRU
+from convgru import ConvGRU, AdvancedConvGRU
 
 
 class SimpleTextEncoder:
@@ -175,8 +175,7 @@ class SimpleVideoGenerator(nn.Module):
             GB(base_width*4, base_width*2),
             GB(base_width*2, base_width),
             GB(base_width, self.n_colors),
-            nn.Tanh()
-        )
+            nn.Tanh())
 
     def forward(self, c, vlen=None):
         """
@@ -212,13 +211,13 @@ class TestVideoGenerator(nn.Module):
         self.gru = nn.GRU(
             self.code_size, self.code_size, batch_first=True)
         
+        GB = partial(GBlock, '2d', stride=1)
         CGB = partial(CGBlock, '3d', self.code_size, stride=(1,2,2))
 
         self.gblock1 = CGB(self.code_size, base_width*8)
         self.gblock2 = CGB(base_width*8, base_width*4)
         self.gblock3 = CGB(base_width*4, base_width*2)
-        self.cgru = ConvGRU(
-                base_width*2, base_width*2, 3, spectral_norm=True)
+        self.cgru = AdvancedConvGRU(GB, base_width*2, base_width*2)
         self.gblock4 = CGB(base_width*2, base_width)
         self.gblock5 = CGB(base_width, self.n_colors)
 
