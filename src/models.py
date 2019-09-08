@@ -71,15 +71,10 @@ class TextEncoder(nn.Module):
 
 
 class StackImageDiscriminator(nn.Module):
-    """
-    Args:
-        k   number of selected frames
-    """
     def __init__(
-            self, in_channels=3, cond_size=64, k=8,
+            self, in_channels=3, cond_size=64,
             base_width=32, noise=False, sigma=.2):
         super().__init__()
-        self.k = k
         self.D1 = nn.Sequential (
             SN(nn.Conv2d(in_channels, base_width, 1)),
             DBlock('2d', base_width, base_width, 2),
@@ -97,23 +92,16 @@ class StackImageDiscriminator(nn.Module):
 
     def forward(self, x, c):
         """
-        x: video
-        c: condition (do not confuse
-           with C - number of filters)
+        x: images; tensor of shape (N, k, C, H, W)
+        c: condition (do not confuse with C - number of filters)
         """
-        selected_frames = torch.multinomial(
-                torch.ones(x.size(2)), self.k)
-        # >> x.shape: (N, C, D, H, W)
-        x = x[:, :, selected_frames, ...]
-        # << x.shape: (N, C, k, H, W)
-        x = torch.flatten(x.permute(0, 2, 1, 3, 4), 0, 1)
-        # << x.shape: (N*k, C, H, W)
-
+        k = x.size(1)
+        x = torch.flatten(x, 0, 1)
         x = self.D1(x)
-        c = c[None, ..., None, None].expand(self.k, *c.shape, 4, 4)
-        x = torch.cat((x, torch.flatten(c,0,1)), 1)
 
-        return self.D2(x).view(-1, self.k)
+        c = c[None, ..., None, None].expand(k, *c.shape, 4, 4)
+        x = torch.cat((x, torch.flatten(c,0,1)), 1)
+        return self.D2(x).view(-1, k)
 
 
 class StackVideoDiscriminator(nn.Module):
@@ -211,13 +199,15 @@ class TestVideoGenerator(nn.Module):
         self.gru = nn.GRU(
             self.code_size, self.code_size, batch_first=True)
         
-        GB = partial(GBlock, '2d', stride=1)
+        #GB = partial(GBlock, '2d', stride=1)
         CGB = partial(CGBlock, '3d', self.code_size, stride=(1,2,2))
 
         self.gblock1 = CGB(self.code_size, base_width*8)
         self.gblock2 = CGB(base_width*8, base_width*4)
         self.gblock3 = CGB(base_width*4, base_width*2)
-        self.cgru = AdvancedConvGRU(GB, base_width*2, base_width*2)
+        #self.cgru = AdvancedConvGRU(GB, base_width*2, base_width*2)
+        self.cgru = ConvGRU(
+                base_width*2, base_width*2, 3, spectral_norm=True)
         self.gblock4 = CGB(base_width*2, base_width)
         self.gblock5 = CGB(base_width, self.n_colors)
 

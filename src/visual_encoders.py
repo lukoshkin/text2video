@@ -60,10 +60,8 @@ class ProjectionVideoDiscriminator(VideoEncoder):
 
 class ImageEncoder(nn.Module):
     def __init__(
-            self, in_colors=3, k_frames=8, 
-            base_width=32, bn=True, sn=False):
+            self, in_colors=3, base_width=32, bn=True, sn=False):
         super().__init__()
-        self.k = k_frames
         block2d = partial(DBlock, '2d', bn=bn, sn=sn)
         self.downsampler = nn.Sequential(
             SN(sn)(nn.Conv2d(in_colors, base_width, 1)),
@@ -73,27 +71,25 @@ class ImageEncoder(nn.Module):
             block2d(base_width*8, base_width*16, 2),
             block2d(base_width*16, base_width*32, 2))
 
-    def forward(self, video):
-        frame_ids = torch.multinomial(
-                torch.ones(video.size(2)), self.k)
-        images = torch.flatten(
-                video[:, :, frame_ids, ...].permute(0,2,1,3,4), 0, 1)
+    def forward(self, images):
+        """
+        images
+        """
+        k = images.size(1)
+        images = torch.flatten(images, 0, 1)
         H = self.downsampler(images)
 
-        # video.shape       (N, C, T, H, W)
+        # images.shape      (N, k, C, H, W)
         # images.shape      (N*k, C, H, W)
         # H.shape           (N*k, base_width*32, 1, 1)
         # output.shape      (N, k, base_width*32)
 
-        return H.view(H.size(0)//self.k, self.k,  -1)
+        return H.view(H.size(0)//k, k,  -1)
 
 
 class ProjectionImageDiscriminator(ImageEncoder):
-    def __init__(
-            self, cond_size, 
-            in_colors=3, k_frames=8, 
-            base_width=32, logits=True):
-        super().__init__(in_colors, k_frames, base_width, bn=False, sn=True)
+    def __init__(self, cond_size, in_colors=3, base_width=32, logits=True):
+        super().__init__(in_colors, base_width, bn=False, sn=True)
         self.proj = nn.Sequential(
             SN(True)(nn.Linear(cond_size, base_width*32)),
             nn.LeakyReLU(.2, True))
