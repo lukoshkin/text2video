@@ -8,13 +8,11 @@ from functools import partial
 
 
 def SN(sn):
-    spectral_norm if sn else lambda x: x
+    return spectral_norm if sn else lambda x: x
 
 
 class VideoEncoder(nn.Module):
-    def __init__(
-            self, in_colors=3, 
-            base_width=32, bn=True, sn=False):
+    def __init__(self, in_colors=3, base_width=32, bn=True, sn=False):
         super().__init__()
         block2d = partial(DBlock, '2d', bn=bn, sn=sn)
         block3d = partial(DBlock, '3d', bn=bn, sn=sn)
@@ -38,13 +36,11 @@ class VideoEncoder(nn.Module):
 
 
 class ProjectionVideoDiscriminator(VideoEncoder):
-    def __init__(
-            self, cond_size, 
-            in_colors=3, base_width=32, logits=True):
+    def __init__(self, cond_size, in_colors=3, base_width=32, logits=True):
         super().__init__(in_colors, base_width, bn=False, sn=True)
         self.proj = nn.Sequential(
             SN(True)(nn.Linear(cond_size, base_width*32)),
-            nn.LeakyReLU(.2, True))
+            nn.LeakyReLU(.2, inplace=True))
         self.pool = SN(True)(nn.Linear(base_width*32, 1))
         if logits: self.activation = nn.Sequential()
         else: self.activation = torch.sigmoid
@@ -54,13 +50,12 @@ class ProjectionVideoDiscriminator(VideoEncoder):
         H = super().forward(video)
         out = self.pool(H).squeeze()
         out += torch.einsum('ij,ij->i', E, H)
-        
+
         return self.activation(out)
 
 
 class ImageEncoder(nn.Module):
-    def __init__(
-            self, in_colors=3, base_width=32, bn=True, sn=False):
+    def __init__(self, in_colors=3, base_width=32, bn=True, sn=False):
         super().__init__()
         block2d = partial(DBlock, '2d', bn=bn, sn=sn)
         self.downsampler = nn.Sequential(
@@ -92,7 +87,7 @@ class ProjectionImageDiscriminator(ImageEncoder):
         super().__init__(in_colors, base_width, bn=False, sn=True)
         self.proj = nn.Sequential(
             SN(True)(nn.Linear(cond_size, base_width*32)),
-            nn.LeakyReLU(.2, True))
+            nn.LeakyReLU(.2, inplace=True))
         self.pool = SN(True)(nn.Linear(base_width*32, 1))
         if logits: self.activation = nn.Sequential()
         else: self.activation = torch.sigmoid

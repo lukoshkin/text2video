@@ -5,7 +5,7 @@ import torch.utils.data
 from torch.nn.utils.rnn import pack_padded_sequence, PackedSequence
 from torch.nn.utils import spectral_norm as SN
 from functools import partial
-from blocks import DBlock, GBlock, CGBlock
+from blocks import DBlock, GBlock, CGBlock, PermInvariantLayer
 from convgru import ConvGRU, AdvancedConvGRU
 
 
@@ -135,6 +135,44 @@ class StackVideoDiscriminator(nn.Module):
         x = torch.cat((x, c), 1)
         
         return self.D2(x).view(-1)
+
+class BatchVideoDiscriminator(nn.Module):
+    def __init__(self, mbs, cond_size, in_colors=3, base_width=32):
+        super().__init__()
+        block2d = partial(DBlock, '2d', mbs=mbs)
+        block3d = partial(DBlock, '3d', mbs=mbs)
+        cgru_heart = partial(
+                PermInvariantLayer, nn.Conv2d,
+                minibatch_size=mbs, sn=True, kernel_size=3, padding=1)
+        self.cgru = AdvancedConvGRU(cgru_heart, base_width*4, base_width*4)
+        self.k1_conv = PermInvariantLayer(
+                nn.Conv3d, in_colors, base_width,
+                mbs, sn=True, kernel_size=1)
+        proj = PermInvariantLayer(
+                nn.Linear, cond_size, base_width*32, mbs, sn=True)
+        self.proj = nn.Sequential(proj, nn.LeakyReLU(.2, True))
+        self.pool = PermInvariantLayer(
+                nn.Linear, base_width*32, 1, mbs, sn=True)
+        self.downsampler1 = nn.Sequential(
+            block3d(base_width, base_width*2, 2),
+            block3d(base_width*2, base_width*4, (1,2,2)))
+        self.downsampler2 = nn.Sequential(
+            block2d(base_width*4, base_width*8, 2),
+            block2d(base_width*8, base_width*16, 2),
+            block2d(base_width*16, base_width*32, 2))
+
+    def forward(self, video, embedding):
+        H = self.k1_conv(video)
+        sys.stdout.flush()
+        H = self.downsampler1(H)
+        _, last = self.cgru(H)
+        H = self.downsampler2(last)
+        H = H.view(H.size(0), -1)
+        E = self.proj(embedding)
+        out = self.pool(H).squeeze()
+        out += torch.einsum('ij,ij->i', E, H)
+
+        return torch.sigmoid(out)
 
 
 class SimpleVideoGenerator(nn.Module):

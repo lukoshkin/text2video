@@ -99,7 +99,9 @@ class LabeledVideoDataset(TextProcessor, Dataset):
             video = folder/f"{sample.id}.webm"
             ViCap = cv2.VideoCapture(str(video))
             _D = ViCap.get(cv2.CAP_PROP_FRAME_COUNT)
-            if int(_D) <  D: continue
+            if int(_D) <  D:
+                self.df.drop(old_index, inplace=True)
+                continue
 
             mult.append(int(_D) // D)
             frames, CNT = self._extractFrames(ViCap, D*mult[-1])
@@ -112,7 +114,8 @@ class LabeledVideoDataset(TextProcessor, Dataset):
             else:
                 corrupted += 1
                 mult.pop()
-                self.df.drop(old_index)
+                self.df.drop(old_index, inplace=True)
+        self.df.index = np.arange(len(self.df))
         print('No of corrupted videos:', corrupted)
         self.data['major'] = np.array(
                 self.data['major'],

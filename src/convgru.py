@@ -17,7 +17,6 @@ class GeneralConvGRUCell(nn.Module):
         return (1 - z) * h_prev + z * h_new
 
 
-
 class ConvGRUCell(GeneralConvGRUCell):
     def __init__(
             self, in_channels, hidden_planes, 
@@ -98,8 +97,9 @@ class ConvGRU(nn.Module):
 class AdvancedConvGRU(nn.Module):
     """
     Args:
-    deepConv2d      block of 2d convolutions of k.s. 3, stride 1, and pad. 1
-    seq_first       if seq_first is True, the layer 
+    deepConv2d      block of 2d convolutions made with `partial`
+                    for specifying only 'in' and 'out' channels
+    seq_first       if seq_first is True, the layer
                     takes an input of the shape (N, T, C, H, W)
                     returns a tensor of the shape (N*T, K, H, W)
                     and the last hidden state of the size (N, K, H, W).
