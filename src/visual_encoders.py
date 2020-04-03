@@ -48,7 +48,7 @@ class ProjectionVideoDiscriminator(VideoEncoder):
     def forward(self, video, embedding):
         E = self.proj(embedding)
         H = super().forward(video)
-        out = self.pool(H).squeeze()
+        out = self.pool(H).squeeze(1)
         out += torch.einsum('ij,ij->i', E, H)
 
         return self.activation(out)
