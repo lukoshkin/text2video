@@ -71,3 +71,13 @@ movement or new (but "similar", e.g., in space of embeddings) objects from uncha
 
 There is also a collection of [references](https://github.com/lukoshkin/text2video/blob/develop/references.md)
 to articles relevant (at the time of 2019) to text2video generation problem.
+
+## Dependencies
+
+Dockerfile would be helpful here...  
+Or I should have written this section earlier.
+
+- torch 1.2.0
+- nvidia/cuda 10.1
+- at least one gpu available
+- some other prerequisites?
