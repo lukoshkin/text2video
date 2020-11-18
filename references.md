@@ -25,9 +25,13 @@
         and might be able to maintain its optimality throughout the learning process.  
         ____________________________________  
         **\*** in case of emperically optimal D  
+        NOTE: All references to the authors in the text block above  
+        are direct copies of references that can be found in [the article](https://arxiv.org/pdf/1902.03984.pdf)
+
+
 **CBN**:  
     1. [Modulating early visual processing by language](https://arxiv.org/pdf/1707.00683.pdf)  
-    1. [A Learned Representation For Artistic Style](https://arxiv.org/pdf/1610.07629.pdf)  
+    2. [A Learned Representation For Artistic Style](https://arxiv.org/pdf/1610.07629.pdf)  
 **BN**:     [Batch Normalization: Accelerating Deep Network Training by Reducing Internal Covariate Shift](https://arxiv.org/pdf/1502.03167.pdf)  
 **ResBlocks**:  [Deep Residual Learning for Image Recognition](https://arxiv.org/pdf/1512.03385.pdf)  
 **ProjDisc**:   [cGANs with Projection Discriminator](https://arxiv.org/pdf/1802.05637.pdf)  
@@ -38,6 +42,6 @@
         - Greater batch size can help dealing with mode collapse and impove the network performance, though it might lead to training collapse (NaNs)  
 **Joint Structured Embeddings**:  
     1. [Learning Deep Representations of Fine-Grained Visual Descriptions](https://arxiv.org/pdf/1605.05395.pdf)  
-    1. [also](https://www.cv-foundation.org/openaccess/content_cvpr_2015/papers/Akata_Evaluation_of_Output_2015_CVPR_paper.pdf)  
+    2. [also](https://www.cv-foundation.org/openaccess/content_cvpr_2015/papers/Akata_Evaluation_of_Output_2015_CVPR_paper.pdf)  
 **Concatenate by Stacking**:    [StackGAN++: Realistic Image Synthesis with Stacked Generative Adversarial Networks](https://arxiv.org/pdf/1710.10916.pdf)  
 **Self-Attention**:     [A Structured Self-attentive Sentence Embedding](https://arxiv.org/pdf/1703.03130.pdf)  

@@ -1,12 +1,17 @@
-Obtain dataset from [here](https://20bn.com/datasets/something-something)
+Obtain dataset from [here](https://20bn.com/datasets/something-something).  
 Unpack it:
-(the following command works only if get all dataset parts on you device)
-```cat 20bn-something-something-v2-?? | tar zx```
+(the following command works only if all dataset parts are on you device)
+
+```
+cat 20bn-something-something-v2-?? | tar zx
+```
 
 Prepare '20bn-sth-sth' dataset
 1. Install 'fromdos'
 
-```apt install tofrodos```
+```
+apt install tofrodos
+```
 
 2. [Download](https://matroska.org/downloads/mkclean.html) and install mkclean
 
@@ -30,6 +35,9 @@ The dataset is ready to use
 
 ## TensorboardX
 
-To add videos, install moviepy package `pip install moviepy`
+To add videos, install moviepy package `pip install moviepy`.  
 To speed up saving a large amount of data, you can optionally do
-```pip install crc32c```
+
+```
+pip install crc32c
+```
