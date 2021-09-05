@@ -10,17 +10,41 @@ from text_processing2 import TextProcessor
 
 
 class LabeledVideoDataset(TextProcessor, Dataset):
+    """
+    Args:
+    -----
+    path2lables - first required positional argument.
+    path2videos - second required positional argument.
+    cache - folder to preserve intermediate and final results.
+    video_shape=(D, H, W, C), where D is the number of frames.
+    step - if a video has multiple of D frames, then this var
+           is applied to reduce their number.
+    mode - the way of screening samples based a sentence object.
+           If 'toy', only sentences with single word objects are selected.
+           If 'simple' - with single-word and hyphenated compound word objects.
+           If 'casual' - any, including those presented by multiple word objects.
+    check_spell - whether or not to correct words spelling.
+    min_word_freq - maximum word frequency of rare words. Sentences
+                    containing them will be discarded from the dataset.
+    glove_folder - path to GloVe embeddings (default: ../embeddings).
+    emb_size - dimensionality of GloVE embeddings.
+    glove_filtration - remove samples (sentences) containing
+                       'out-of-GloVe-dictionary' words.
+    transform - function which should be applied on a video.
+    """
     def __init__(
-            self, path, cache, 
+            self, path2labels, path2videos, cache,
             video_shape=(32, 32, 32, 3), step=2,
             mode='toy', check_spell=True, min_word_freq=2,
-            glove_folder='../embeddings', emb_size=50, 
+            glove_folder='../embeddings', emb_size=50,
             glove_filtration=True, transform=None):
-        self.transform = transform if transform else lambda x: x
+
         super().__init__(
-                path, cache, mode, 
-                check_spell, min_word_freq, 
+                path2labels, cache, mode,
+                check_spell, min_word_freq,
                 glove_folder, emb_size, glove_filtration)
+
+        self.transform = transform if transform else lambda x: x
         self._save_db_as = Path(f'{self._path.stem}.db')
         self._video_shape = video_shape
         self._step = step
@@ -33,7 +57,7 @@ class LabeledVideoDataset(TextProcessor, Dataset):
             self._i2i = {}
             self.data = {'major': [], 'minor': []}
 
-            self._prepareDatabase()
+            self._prepareDatabase(Path(path2videos))
             print('Caching database to', self._save_db_as)
             with open(cache/self._save_db_as, 'wb') as fp:
                 pickle.dump(self.data, fp, pickle.HIGHEST_PROTOCOL)
@@ -44,14 +68,23 @@ class LabeledVideoDataset(TextProcessor, Dataset):
         return len(self.data['minor'])
 
     def __getitem__(self, index):
+        """
+        'minor' is a set of extracted and encoded
+          object, action performed on the object,
+          and the number of tokens in the sentence
+          presenting this action.
+
+        'major' is a set of video, its description,
+          and the number of words in the latter.
+        """
         lbl, lbl_len, video = self.data['major'][index]
         obj_vec, act_vec, act_len = self.data['minor'][index]
 
-        return {'major': 
+        return {'major':
                     {'label': lbl,
-                     'lbllen': lbl_len, 
+                     'lbllen': lbl_len,
                      'video': self.transform(video)},
-                'minor': 
+                'minor':
                     {'object': obj_vec,
                      'action': act_vec,
                      'actlen': act_len}}
@@ -67,10 +100,10 @@ class LabeledVideoDataset(TextProcessor, Dataset):
 
     def sen2vec(self, sen, mode):
         """
-        Converts a sentence to a sequence of positive integers 
-        according to 't2i' dictionary. Depending on the mode, 
+        Converts a sentence to a sequence of positive integers
+        according to 't2i' dictionary. Depending on the mode,
         the result may be padded to the required length.
-        
+
         Output type: int64 - necessary for nn.Embedding
         """
         if mode == 'toy':
@@ -85,18 +118,19 @@ class LabeledVideoDataset(TextProcessor, Dataset):
         numerated[:len(filling)] = filling
         return numerated
 
-    def _prepareDatabase(self):
+    def _prepareDatabase(self, path2videos):
         """
         Fetches videos and corresponding text representations to `self.data`
         Prepares `self._i2i` for the later use by the `self.getById` method
         """
         D, H, W, C = self._video_shape
         new_index, corrupted, mult = 0, 0, []
-        folder = self._path.parents[1]/'video'
-        pbar = tqdm(self.df.iterrows(), "Preparing dataset", len(self.df))
+        pbar = tqdm(
+            self.df.iterrows(), "Preparing dataset",
+            len(self.df), bar_format=self._tqdmBF)
 
         for old_index, sample in pbar:
-            video = folder/f"{sample.id}.webm"
+            video = path2videos/f"{sample.id}.webm"
             ViCap = cv2.VideoCapture(str(video))
             _D = ViCap.get(cv2.CAP_PROP_FRAME_COUNT)
             if int(_D) <  D:
@@ -139,7 +173,7 @@ class LabeledVideoDataset(TextProcessor, Dataset):
             success, image = ViCap.read()
             if success:
                 image = cv2.resize(
-                        image, self._video_shape[1:-1], 
+                        image, self._video_shape[1:-1],
                         interpolation=cv2.INTER_AREA)
                 image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
                 frames += [image]

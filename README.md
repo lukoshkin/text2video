@@ -1,7 +1,7 @@
 # Video Generation Based on Short Text Description (2019)
 
-Over a year latter, I have decided to add README to the repository, since
-some people find the latter useful even without a description. I hope this
+Over a year latter (in 2020), I have decided to add README to the repository, since
+some people find it useful even without a description. I hope this
 step will make the results of my work more usable for those who are interested
 in the problem and stumble upon the repository when browsing the topic on GitHub.
 
@@ -20,8 +20,10 @@ _mug_ (bottom left window), and _marker_ (bottom right window), pushed along the
 The number of occurrences in the data subset for the corresponding objects is 57, 43, 9, 55. 
 
 The generated videos are diverse (thanks to [zero-gradient penalty](https://arxiv.org/abs/1902.03984))
-and about the same quality as the videos from the training data. **There are no tests
-conducted on the validation data.**
+and about the same quality as the videos from the training data. However, **there are no tests
+conducted on the validation data.** Regarding the gif below, since all the objects
+belong to the same category, only single-word conditioning (i.e., on the object) is used.
+Still, there are tools in the repository for encoding the whole sentence.
 
 <p align="center">
   <img src="example.gif" />
@@ -31,7 +33,8 @@ conducted on the validation data.**
 <sup>**1**</sup> Yep, exactly "from left to right" and not the other way
 around as you can read it on the gif (it is a typo). However, it is good
 for validation purposes to make new labels with the reversed direction of
-movement or new (but "similar", e.g., in space of embeddings) objects from unchanged category.
+movement or new (but "similar", e.g., in space of embeddings) objects
+from unchanged category.
 
 ## Navigating Through SRC Files
 
@@ -57,7 +60,7 @@ movement or new (but "similar", e.g., in space of embeddings) objects from uncha
   </tr>
   <tr>
     <td> pipeline.ipynb </td>
-    <td> Previously served for the same purpose as pipeline.py </br> but hadrcoded range was 0-2.
+    <td> Previously served for the same purpose as process3-5.ipynb </br> but hadrcoded range was 0-2.
          Now it is <b> unfinished implementation </b> of <a href='https://arxiv.org/abs/1806.07185'>mixed batches</a> </td>
   </tr>
   <tr>
@@ -70,14 +73,83 @@ movement or new (but "similar", e.g., in space of embeddings) objects from uncha
 </center>
 
 There is also a collection of [references](https://github.com/lukoshkin/text2video/blob/develop/references.md)
-to articles relevant (at the time of 2019) to text2video generation problem.
+to articles relevant (at the time of 2019) to the text2video generation problem.
 
-## Dependencies
+## Update of 2021
 
-Dockerfile would be helpful here...  
-Or I should have written this section earlier.
+This year, I have decided to make the results reproducible. It has turned out
+that if one has not dealt with this repo before, it is a tough call for them
+to get it up and running again. Quite surprising, huh? Especially, considering
+I uploaded everything hastily and as it was. Now, at least you can follow
+the instructions below. This is how you reach the state of what I left in 2019.
+To move further, a great deal of effort is required. Good luck!
 
-- torch 1.2.0
-- nvidia/cuda 10.1
-- at least one gpu available
-- some other prerequisites?
+## Setting Everything Up
+
+1. Clone the repository
+```
+git clone https://github.com/lukoshkin/text2video.git
+```
+
+2. Retrieve the docker image
+```
+cd docker
+docker build -t lukoshkin/text2video:base .
+```
+or
+```
+docker pull lukoshkin/text2video:base
+```
+
+If using singularity, one can obtain the image by typing
+```
+singularity build t2v-base.simg docker://lukoshkin/text2video:base
+```
+
+3. Get an access to GPU. For cluster-folks, it may look like:
+```
+salloc -p gpu_a100 -N 1 -n 4 --gpus=1 --mem-per-gpu=20G --time=12:00:00
+## prints the name of allocated node, e.g., gn26
+ssh gn26
+```
+
+4. Cd to the directory where everything is located and create a container
+(9999 is a port exposed for Jupyter outside the container. That is, if running
+directly on your computer, `localhost:9999` is your access point in a browser.
+You may need one more port for TensorBoard as well; note, 8888 is the default
+one Jupyter tries first, if the port is busy, you should specify it manually
+in the `jupyter`-command with `--port` option )
+```
+nvidia-docker run --name t2v \
+  -p 9999:8888 -v "$PWD":/home/depp/project
+  -d lukoshkin/text2video:base \
+  'jupyter-notebook --ip=0.0.0.0 --no-browser'
+```
+
+Singularity users are like:
+```
+singularity exec \
+  --no-home -B "$PWD:$HOME" --nv t2v-base.simg \
+  jupyter notebook --ip 0.0.0.0 --no-browser
+```
+
+Note, `unzip` is not included in the docker image, though it is used `.ipynb`
+notebooks. (I kept the lines with `unzip` because lately I edited it in a
+singularity container derived from that docker image, and I don't know whether
+it is bug or feature, but after the image conversion, `unzip` gets installed.)
+If you need it for your purposes, you can install it as follows:
+```
+docker exec -u root t2v sh -c 'apt-get update && apt-get install unzip'
+```
+
+If accustomed to work in JupyterLab, please, use it readily
+by rewriting the commands to the proper form first.
+
+For running everything on a HPC cluster, one should forward the ports.
+You type one of the following. Which one? - depends on whether you
+ssh to calculation nodes (gn26) on your server and whether you
+set up a `nickname` for the latter in `.ssh/config`.
+```
+ssh -NL 9999:gn26:8888 nickname
+ssh -NL 9999:localhost:8888 user@server
+```

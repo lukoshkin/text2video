@@ -34,9 +34,9 @@ def selectTemplates(path, templates, new_name):
 
 class TextProcessor:
     def __init__(
-            self, path, cache, mode='toy', 
-            check_spell=True, min_freq=2, 
-            glove_folder='../embeddings', 
+            self, path, cache, mode='toy',
+            check_spell=True, min_freq=2,
+            glove_folder='../embeddings',
             emb_size=50, glove_filtration=True):
         self._mode = mode
         self._path = Path(path)
@@ -47,6 +47,7 @@ class TextProcessor:
         self._check_spell = check_spell
         self._save_df_as = f'{self._path.stem}.pkl'
         self._save_t2i_as = f'{mode}_vocab.pkl'
+        self._tqdmBF = '{l_bar}{bar:10}{r_bar}{bar:-10b}'
         self._GF = glove_filtration
 
         if mode not in ['toy', 'simple', 'casual']:
@@ -77,7 +78,7 @@ class TextProcessor:
                 not_found += 1
         emb_matrix[0] = 0
 
-        if not_found: 
+        if not_found:
             print('No of missed tokens in glove dict:', not_found)
         np.save(self._cache/'emb_matrix', emb_matrix)
         return emb_matrix
@@ -90,14 +91,17 @@ class TextProcessor:
         if save_as.exists():
             with open(save_as, 'rb') as fp:
                 self._glove = pickle.load(fp)
-            return 
+            return
 
         folder = Path(folder)
         with open(folder/f'glove.6B.{emb_size}d.txt') as fp:
             raw_data = fp.readlines()
 
+        pbar = tqdm(
+            raw_data, 'Reading glove embeddings',
+            bar_format=self._tqdmBF)
+
         self._glove = {}
-        pbar = tqdm(raw_data, 'Reading glove embeddings')
         for line in pbar:
             t, *v = line.split()
             self._glove[t] = np.array(v, 'float32')
@@ -111,13 +115,13 @@ class TextProcessor:
         filtration by word frequency, spell correction,
         data frame columns update. Also, caches the results
         """
-        if ((self._cache/self._save_t2i_as).exists() and 
+        if ((self._cache/self._save_t2i_as).exists() and
                 (self._cache/self._save_df_as).exists()):
             self.df = pd.read_pickle(self._cache/self._save_df_as)
             with open(self._cache/self._save_t2i_as, 'rb') as fp:
                 self.t2i = pickle.load(fp)
                 self._max_len, self._act_max_len = pickle.load(fp)
-            return 
+            return
 
         ext = self._path.suffix
         if ext == '.json':
@@ -132,7 +136,8 @@ class TextProcessor:
         self._extractActions(tokens)
         self.df.label = self.df.apply(
                 lambda x: re.sub('something',
-                    ' '.join(x.placeholders), ' '.join(x.template)), axis=1)
+                    ' '.join(x.placeholders),
+                    ' '.join(x.template)), axis=1)
         self.df.label = self.df.label.map(str.split)
         self._act_max_len = max(map(len, self.df.template))
         if self._mode == 'toy': self._max_len = self._act_max_len
@@ -145,9 +150,9 @@ class TextProcessor:
             pickle.dump(self.t2i, fp)
             pickle.dump((self._max_len, self._act_max_len), fp)
 
-    def _extractActions(self, tokens): 
+    def _extractActions(self, tokens):
         """
-        Updates the `self.df.template` series and  collects tokens 
+        Updates the `self.df.template` series and  collects tokens
         encountered in the column into `tokens`
         """
         self.df.template = self.df.template.map(
@@ -168,8 +173,8 @@ class TextProcessor:
                         bad_ids.append(i)
                         break
             mask = self.df.template.isin(bad_sens)
-            self.df = self.df[~mask] 
-            sentences = np.delete(sentences, bad_ids) 
+            self.df = self.df[~mask]
+            sentences = np.delete(sentences, bad_ids)
             self.df.index = np.arange(len(self.df))
         self.df.template = self.df.template.map(wordpunct_tokenize)
         token_counts = Counter(
@@ -178,7 +183,7 @@ class TextProcessor:
 
     def _extractObjects(self, mode, tokens):
         """
-        Updates the `self.df.placeholders` series according to the processing 
+        Updates the `self.df.placeholders` series according to the processing
         `mode` policy. Collects tokens encountered in the column into `tokens`
         """
         sentences = self.df.placeholders
@@ -211,8 +216,8 @@ class TextProcessor:
     def _findTypos(self, sentences):
         """
         Colects suspicious (rare) words in `self._vague_words`.
-        `self._min_freq` defines the rarity extent.  
-        If `self._check_spell` == True, then the words found 
+        `self._min_freq` defines the rarity extent.
+        If `self._check_spell` == True, then the words found
         will be corrected with pyspellchecker
 
         Returns counts of the words in the sentences
@@ -224,12 +229,17 @@ class TextProcessor:
         token_counts = Counter(np.concatenate(sentences))
         self._vague_words = freqFilter(token_counts)
 
-        if not (self._check_spell and self._vague_words): 
+        if not (self._check_spell and self._vague_words):
             return token_counts
 
         spell = SpellChecker()
         checked_words = []
-        for sen in tqdm(sentences, 'Spell-check'):
+        pbar = tqdm(
+            sentences,
+            'Spell-check',
+            bar_format=self._tqdmBF)
+
+        for sen in pbar:
             for i, w in enumerate(sen):
                 if w in self._vague_words:
                     sen[i] = spell.correction(w)
@@ -238,9 +248,9 @@ class TextProcessor:
         self._vague_words = freqFilter(token_counts)
         return token_counts
 
-    def _updateObjects(self, sentences): 
-        """ 
-        Subtitutes 'mispelled' words (those that are in `self._vague_words`) 
+    def _updateObjects(self, sentences):
+        """
+        Subtitutes 'mispelled' words (those that are in `self._vague_words`)
         in the `self.df.placeholders` with the `sentences` given
         """
         def to_remove(word):
@@ -252,7 +262,11 @@ class TextProcessor:
 
         mended = copy.deepcopy(sentences)
         if self._vague_words or self._GF:
-            pbar = tqdm(sentences, "Removing 'bad samples'")
+            pbar = tqdm(
+                sentences,
+                "Removing 'bad samples'",
+                bar_format=self._tqdmBF)
+
             k = 0
             for i, sen in enumerate(pbar):
                 flag = True
