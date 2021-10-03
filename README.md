@@ -133,15 +133,6 @@ singularity exec \
   jupyter notebook --ip 0.0.0.0 --no-browser
 ```
 
-Note, `unzip` is not included in the docker image, though it is used `.ipynb`
-notebooks. (I kept the lines with `unzip` because lately I edited it in a
-singularity container derived from that docker image, and I don't know whether
-it is bug or feature, but after the image conversion, `unzip` gets installed.)
-If you need it for your purposes, you can install it as follows:
-```
-docker exec -u root t2v sh -c 'apt-get update && apt-get install unzip'
-```
-
 If accustomed to work in JupyterLab, please, use it readily
 by rewriting the commands to the proper form first.
 
